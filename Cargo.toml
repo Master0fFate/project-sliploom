@@ -1,0 +1,5 @@
+[workspace]
+members = ["apps/receiver-service"]
+default-members = ["apps/receiver-service"]
+exclude = ["apps/desktop"]
+resolver = "3"

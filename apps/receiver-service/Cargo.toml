@@ -1,0 +1,11 @@
+[package]
+name = "receiver-service"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+sha2 = "0.10"
+tempfile = "3"
