@@ -44,9 +44,9 @@ enum ReceiptOutcome {
 impl ReceiptOutcome {
     fn message(self) -> String {
         match self {
-            Self::Saved(bytes) => format!("Saved here ({bytes} bytes)."),
+            Self::Saved(bytes) => format!("Last save: {bytes} bytes."),
             Self::SavedWithUncertainConfirmation(bytes) => {
-                format!("Saved here ({bytes} bytes). The phone may not have received confirmation.")
+                format!("Last save: {bytes} bytes. The phone may not have received confirmation.")
             }
         }
     }
@@ -192,13 +192,11 @@ impl Cable {
                 Ok(Event::Folder(path)) => {
                     self.folder.set(Some(path));
                 }
-                Ok(Event::Prompt(prompt)) => {
-                    self.receipt.set(None);
-                    if prompt.deadline > Instant::now() {
-                        self.prompt.set(Some(prompt));
-                        self.status.set(String::new());
-                    }
+                Ok(Event::Prompt(prompt)) if prompt.deadline > Instant::now() => {
+                    self.prompt.set(Some(prompt));
+                    self.status.set(String::new());
                 }
+                Ok(Event::Prompt(_)) => {}
                 Ok(Event::Receipt(receipt)) => {
                     self.status.set(WAITING.into());
                     self.receipt.set(Some(receipt));
