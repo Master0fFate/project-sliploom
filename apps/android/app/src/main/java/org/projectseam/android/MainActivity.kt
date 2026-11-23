@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
 import android.os.Process
+import android.provider.OpenableColumns
 import android.view.View
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -51,10 +52,13 @@ import com.google.zxing.client.android.Intents
 import com.journeyapps.barcodescanner.CaptureActivity
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.Closeable
@@ -343,8 +347,10 @@ private class Operation(
         }
     }
 
-    fun run(context: Context, source: Source): Status = try {
+    suspend fun run(context: Context, source: Source): Status = try {
         openAndRun(context, source)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
     } catch (_: IOException) {
         sourceFailure()
     } catch (_: RuntimeException) {
@@ -362,17 +368,22 @@ private class Operation(
         else -> if (sending) Status.SendCancelled else Status.Cancelled
     }
 
-    private fun openAndRun(context: Context, source: Source): Status {
+    private suspend fun openAndRun(context: Context, source: Source): Status {
         checkActive()
         val uri = source.uri
-        val grant = context.checkUriPermission(uri, Process.myPid(), Process.myUid(), Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val granted = hasReadGrant(context, uri)
         checkActive()
-        if (grant != PackageManager.PERMISSION_GRANTED) return Status.GrantLost
+        if (!granted) return Status.GrantLost
         val resolver = context.contentResolver
         val type = source.type ?: resolver.getType(uri)
         if (type == null || !type.isSupported()) return Status.Unsupported
         checkActive()
         val isPdf = type == "application/pdf"
+        val transferContext = currentCoroutineContext()
+        val displayName = {
+            transferContext.ensureActive()
+            queryDisplayName(context, uri).also { transferContext.ensureActive() }
+        }
         if (cable != null) {
             try {
                 return sendStatus(cable.send(
@@ -394,6 +405,7 @@ private class Operation(
                             input
                         }
                     },
+                    displayName = displayName,
                     onApproved = { cableApproved.set(true) },
                     onProgress = { sentBytes.set(it) },
                 ))
@@ -414,10 +426,28 @@ private class Operation(
             localResource = null
             checkActive()
             val network = lan ?: return checkFile(input)
-            return sendStatus(network.send(input, length, isPdf) { sentBytes.set(it) })
+            return sendStatus(network.send(input, length, isPdf, displayName) { sentBytes.set(it) })
         } finally {
             if (localResource != null) cleanup { localResource?.close() } else closeSource()
         }
+    }
+
+    private fun hasReadGrant(context: Context, uri: Uri) = context.checkUriPermission(
+        uri, Process.myPid(), Process.myUid(), Intent.FLAG_GRANT_READ_URI_PERMISSION,
+    ) == PackageManager.PERMISSION_GRANTED
+
+    private fun queryDisplayName(context: Context, uri: Uri): String? = try {
+        val column = OpenableColumns.DISPLAY_NAME
+        if (!hasReadGrant(context, uri)) null else context.contentResolver.query(
+            uri, arrayOf(column), null, null, null, signal,
+        )?.use { cursor ->
+            val index = cursor.getColumnIndex(column)
+            if (index >= 0 && cursor.moveToFirst() && !cursor.isNull(index)) cursor.getString(index) else null
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        null
     }
 
     private fun closeSource() {

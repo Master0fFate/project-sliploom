@@ -3,6 +3,7 @@ package org.projectseam.android
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.os.SystemClock
+import kotlinx.coroutines.CancellationException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -25,6 +26,7 @@ internal class CableTransfer(private val onStop: (TransferStop) -> Unit) {
     fun send(
         isPdf: Boolean,
         prepare: () -> Payload,
+        displayName: () -> String?,
         onApproved: () -> Unit,
         onProgress: (Long) -> Unit,
     ): TransferResult {
@@ -42,7 +44,9 @@ internal class CableTransfer(private val onStop: (TransferStop) -> Unit) {
             start()
         }
         try {
-            return complete(offer(socket, isPdf, prepare, onApproved, onProgress))
+            return complete(offer(socket, isPdf, prepare, displayName, onApproved, onProgress))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: IOException) {
             return complete(TransferResult.Failed)
         } catch (_: RuntimeException) {
@@ -60,6 +64,7 @@ internal class CableTransfer(private val onStop: (TransferStop) -> Unit) {
         socket: LocalSocket,
         isPdf: Boolean,
         prepare: () -> Payload,
+        displayName: () -> String?,
         onApproved: () -> Unit,
         onProgress: (Long) -> Unit,
     ): TransferResult {
@@ -90,6 +95,7 @@ internal class CableTransfer(private val onStop: (TransferStop) -> Unit) {
         if (!matchesHeader(header, 0x02, 0)) return TransferResult.Failed
         progress()
         onApproved()
+        writeOptionalName(output, displayName, ::checkActive)
         val input = payload.open()
         return pumpTransfer(
             input, payload.length, output, response, ::checkActive, ::progress, ::startEnd, onProgress,

@@ -2,6 +2,7 @@ package org.projectseam.android
 
 import android.os.SystemClock
 import android.util.Base64
+import kotlinx.coroutines.CancellationException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -11,6 +12,7 @@ import java.net.Proxy
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
 import java.security.MessageDigest
 import java.security.NoSuchAlgorithmException
 import java.security.cert.CertificateException
@@ -126,6 +128,7 @@ internal class LanTransfer(private val invite: LanInvite, private val onStop: (T
         input: InputStream,
         declaredLength: Long,
         isPdf: Boolean,
+        displayName: () -> String?,
         onProgress: (Long) -> Unit,
     ): TransferResult {
         synchronized(lock) {
@@ -172,9 +175,12 @@ internal class LanTransfer(private val invite: LanInvite, private val onStop: (T
             checkActive()
             writePacket(output, beginFrame(isPdf, declaredLength))
             progress()
+            writeOptionalName(output, displayName, ::checkActive)
             return complete(pumpTransfer(
                 input, declaredLength, output, response, ::checkActive, ::progress, ::startEnd, onProgress,
             ))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: SocketTimeoutException) {
             return complete(TransferResult.Failed, socketTimedOut = true)
         } catch (_: TlsUnavailableException) {
@@ -259,6 +265,7 @@ internal const val TRANSFER_MAX_BYTES = 64L * 1024 * 1024
 private const val CHUNK_BYTES = 65_536
 internal const val HEADER_BYTES = 5
 private const val RECEIPT_BYTES = 40
+private const val MAX_NAME_BYTES = 180
 
 private class TlsUnavailableException : IOException()
 
@@ -272,6 +279,22 @@ private fun sha256(): MessageDigest = MessageDigest.getInstance("SHA-256")
 
 internal fun beginFrame(isPdf: Boolean, declaredLength: Long): ByteArray = ByteBuffer.allocate(HEADER_BYTES + 9)
     .put(0x03).putInt(9).put(if (isPdf) 0x02 else 0x01).putLong(declaredLength).array()
+
+internal fun writeOptionalName(output: OutputStream, displayName: () -> String?, checkActive: () -> Unit) {
+    checkActive()
+    val name = displayName()
+    checkActive()
+    if (name == null || name.length !in 1..MAX_NAME_BYTES) return
+    val bytes = try {
+        name.encodeToByteArray(throwOnInvalidSequence = true)
+    } catch (_: CharacterCodingException) {
+        return
+    }
+    if (bytes.size !in 1..MAX_NAME_BYTES) return
+    writePacket(output, ByteBuffer.allocate(HEADER_BYTES + bytes.size)
+        .put(0x08).putInt(bytes.size).put(bytes).array())
+    checkActive()
+}
 
 internal fun pumpTransfer(
     input: InputStream,
