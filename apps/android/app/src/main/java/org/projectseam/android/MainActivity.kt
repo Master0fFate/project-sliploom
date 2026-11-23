@@ -71,6 +71,7 @@ import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 class MainActivity : ComponentActivity() {
@@ -111,27 +112,36 @@ class MainActivity : ComponentActivity() {
                 status = status,
                 sentBytes = intake.sentBytes,
                 hasSource = intake.hasSource,
+                cableMode = intake.cableMode,
                 invitation = intake.invitation,
                 address = intake.parsedInvite?.address,
                 scanMessage = intake.scanMessage,
                 onScan = ::scanInvitation,
                 onInvitationChanged = { value ->
-                    if (foreground && intake.hasSource && !intake.status.working) intake.editInvitation(value)
+                    if (foreground && !intake.cableMode && intake.hasSource && !intake.status.working) {
+                        intake.editInvitation(value)
+                    }
                 },
                 onSend = {
-                    if (foreground && supportsLanSend) intake.parsedInvite?.let { invite ->
+                    if (foreground && supportsLanSend && !intake.cableMode) intake.parsedInvite?.let { invite ->
                         intake.editInvitation("")
                         intake.start(applicationContext, invite)
                     }
                 },
                 onCheck = {
-                    if (foreground) {
+                    if (foreground && !intake.cableMode) {
                         intake.editInvitation("")
                         intake.start(applicationContext, null)
                     }
                 },
                 onPick = {
                     if (foreground && !intake.status.working) picker.launch(arrayOf("image/*", "application/pdf"))
+                },
+                onRetryCable = {
+                    if (foreground && intake.canRetryCable) intake.start(applicationContext, null)
+                },
+                onUseWifi = {
+                    if (foreground && supportsLanSend) intake.useWifi()
                 },
                 onCancel = cancel,
             )
@@ -178,7 +188,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun scanInvitation() {
-        if (!foreground || !supportsLanSend || !intake.hasSource || intake.status.working) return
+        if (!foreground || !supportsLanSend || intake.cableMode || !intake.hasSource || intake.status.working) return
         if (!packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) {
             intake.scanMessage = R.string.scan_unavailable
             return
@@ -224,7 +234,8 @@ class MainActivity : ComponentActivity() {
             intake.status = Status.Missing
             return
         }
-        intake.select(uri, type)
+        intake.select(uri, type, viaCable = true)
+        if (intake.hasSource) intake.start(applicationContext, null)
     }
 }
 
@@ -274,18 +285,19 @@ private object FileOperations {
         context: Context,
         source: Source,
         invite: LanInvite?,
-        onProgress: (Long) -> Unit,
+        viaCable: Boolean,
+        onProgress: (Long, Boolean) -> Unit,
         onStopping: (Status) -> Unit,
         onFinished: (Status, Long?) -> Unit,
     ): Operation? {
         if (busy) return null
-        val operation = Operation(invite, scope, onStopping)
+        val operation = Operation(invite, viaCable, scope, onStopping)
         active = operation
         scope.launch {
             val progress = if (operation.sending) launch {
                 while (true) {
                     delay(125)
-                    onProgress(operation.sentBytes.get())
+                    onProgress(operation.sentBytes.get(), operation.cableApproved.get())
                 }
             } else null
             val result = withContext(Dispatchers.IO) { operation.run(context, source) }
@@ -304,30 +316,37 @@ private object FileOperations {
 
 private class Operation(
     invite: LanInvite?,
+    viaCable: Boolean,
     private val scope: CoroutineScope,
     private val onStopping: (Status) -> Unit,
 ) {
     private val lock = Any()
     private val signal = CancellationSignal()
     private var resource: Closeable? = null
-    private var stopReason: LanStop? = null
+    private var stopReason: TransferStop? = null
     private var cleanupJob: Job? = null
-    private val transfer = invite?.let { LanTransfer(it, ::requestStop) }
-    val sending: Boolean get() = transfer != null
+    private val lan = invite?.let { LanTransfer(it, ::requestStop) }
+    private val cable = if (viaCable) CableTransfer(::requestStop) else null
+    val sending: Boolean get() = lan != null || cable != null
     val sentBytes = AtomicLong()
+    val cableApproved = AtomicBoolean()
     val cancellation: Job? get() = synchronized(lock) { cleanupJob }
 
     fun cancel() {
-        if (transfer != null) transfer.cancel() else requestStop(LanStop.Cancelled)
+        when {
+            cable != null -> cable.cancel()
+            lan != null -> lan.cancel()
+            else -> requestStop(TransferStop.Cancelled)
+        }
     }
 
-    private fun requestStop(reason: LanStop) {
+    private fun requestStop(reason: TransferStop) {
         synchronized(lock) {
             if (stopReason != null) return
             stopReason = reason
             val toClose = takeResource()
             cleanupJob = scope.launch {
-                onStopping(if (reason == LanStop.TimedOut) Status.TimingOut else Status.Cancelling)
+                onStopping(if (reason == TransferStop.TimedOut) Status.TimingOut else Status.Cancelling)
                 launch(Dispatchers.IO) { cleanup { signal.cancel() } }
                 launch(Dispatchers.IO) { cleanup { toClose?.close() } }
             }
@@ -349,7 +368,7 @@ private class Operation(
     }
 
     private fun stoppedBeforeTransfer() = when (synchronized(lock) { stopReason }) {
-        LanStop.TimedOut -> Status.SendTimedOut
+        TransferStop.TimedOut -> Status.SendTimedOut
         else -> if (sending) Status.SendCancelled else Status.Cancelled
     }
 
@@ -363,41 +382,75 @@ private class Operation(
         val type = source.type ?: resolver.getType(uri)
         if (type == null || !type.isSupported()) return Status.Unsupported
         checkActive()
+        val isPdf = type == "application/pdf"
+        if (cable != null) {
+            try {
+                return sendStatus(cable.send(
+                    isPdf,
+                    prepare = {
+                        checkActive()
+                        val descriptor = resolver.openAssetFileDescriptor(uri, "r", signal) ?: throw IOException()
+                        if (!register(descriptor)) {
+                            cleanup { descriptor.close() }
+                            throw OperationCanceledException()
+                        }
+                        CableTransfer.Payload(descriptor.declaredLength) {
+                            checkActive()
+                            val input = descriptor.createInputStream()
+                            if (!register(input)) {
+                                cleanup { input.close() }
+                                throw OperationCanceledException()
+                            }
+                            input
+                        }
+                    },
+                    onApproved = { cableApproved.set(true) },
+                    onProgress = { sentBytes.set(it) },
+                ))
+            } finally {
+                closeSource()
+            }
+        }
         val descriptor = resolver.openAssetFileDescriptor(uri, "r", signal) ?: return sourceFailure()
         var localResource: Closeable? = descriptor
         try {
             checkActive()
             val length = descriptor.declaredLength
-            if (sending && length > LAN_MAX_BYTES) return Status.SendTooLarge
+            if (sending && length > TRANSFER_MAX_BYTES) return Status.SendTooLarge
             if (!sending && length > CHECK_MAX_BYTES) return Status.CheckTooLarge
             val input = descriptor.createInputStream()
             localResource = input
             if (!register(input)) return stoppedBeforeTransfer()
             localResource = null
             checkActive()
-            val network = transfer ?: return checkFile(input)
-            return send(network, input, length, type == "application/pdf")
+            val network = lan ?: return checkFile(input)
+            return sendStatus(network.send(input, length, isPdf) { sentBytes.set(it) })
         } finally {
-            val toClose = localResource ?: synchronized(lock) { takeResource() }
-            cleanup { toClose?.close() }
+            if (localResource != null) cleanup { localResource?.close() } else closeSource()
         }
     }
 
-    private fun send(network: LanTransfer, input: InputStream, length: Long, isPdf: Boolean): Status =
-        when (val result = network.send(input, length, isPdf) { sentBytes.set(it) }) {
-            is LanResult.Saved -> {
-                sentBytes.set(result.bytes)
-                Status.Saved
-            }
-            LanResult.Unconfirmed -> Status.Unconfirmed
-            LanResult.TooLarge -> Status.SendTooLarge
-            LanResult.Failed -> Status.SendFailed
-            LanResult.TlsUnavailable -> Status.TlsUnavailable
-            is LanResult.Stopped -> when (result.reason) {
-                LanStop.Cancelled -> if (result.afterEnd) Status.UnconfirmedAfterCancel else Status.SendCancelled
-                LanStop.TimedOut -> if (result.afterEnd) Status.UnconfirmedAfterTimeout else Status.SendTimedOut
-            }
+    private fun closeSource() {
+        val toClose = synchronized(lock) { takeResource() }
+        cleanup { toClose?.close() }
+    }
+
+    private fun sendStatus(result: TransferResult): Status = when (result) {
+        is TransferResult.Saved -> {
+            sentBytes.set(result.bytes)
+            Status.Saved
         }
+        TransferResult.Unconfirmed -> Status.Unconfirmed
+        TransferResult.TooLarge -> Status.SendTooLarge
+        TransferResult.Failed -> Status.SendFailed
+        TransferResult.TlsUnavailable -> Status.TlsUnavailable
+        TransferResult.CableUnavailable -> Status.CableUnavailable
+        TransferResult.Declined -> Status.Declined
+        is TransferResult.Stopped -> when (result.reason) {
+            TransferStop.Cancelled -> if (result.afterEnd) Status.UnconfirmedAfterCancel else Status.SendCancelled
+            TransferStop.TimedOut -> if (result.afterEnd) Status.UnconfirmedAfterTimeout else Status.SendTimedOut
+        }
+    }
 
     private fun checkFile(input: InputStream): Status {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -445,6 +498,10 @@ private class IntakeState : ViewModel() {
     private var scanSource: Source? = null
     private var operation: Operation? = null
     val hasSource: Boolean get() = source != null
+    var cableMode by mutableStateOf(false)
+        private set
+    val canRetryCable: Boolean
+        get() = cableMode && hasSource && status.canRetryCable
     var invitation by mutableStateOf("")
         private set
     var parsedInvite by mutableStateOf<LanInvite?>(null)
@@ -489,21 +546,30 @@ private class IntakeState : ViewModel() {
 
     fun reset(shareSession: Boolean) {
         hasShareSession = shareSession
+        cableMode = false
         source = null
         sentBytes = null
         status = Status.Idle
     }
 
-    fun select(uri: Uri, type: String?) {
+    fun select(uri: Uri, type: String?, viaCable: Boolean = false) {
         reset(true)
         when {
             uri.scheme != ContentResolver.SCHEME_CONTENT || uri.authority.isNullOrBlank() -> status = Status.Unsupported
             FileOperations.busy -> status = Status.Busy
             else -> {
                 source = Source(uri, type)
+                cableMode = viaCable
                 status = Status.Ready
             }
         }
+    }
+
+    fun useWifi() {
+        if (!cableMode || !hasSource || status != Status.CableUnavailable) return
+        cableMode = false
+        sentBytes = null
+        status = Status.Ready
     }
 
     fun beginScan(): Boolean {
@@ -522,21 +588,30 @@ private class IntakeState : ViewModel() {
         val selected = source ?: return
         if (operation != null) return
         val attempt = FileOperations.start(
-            context, selected, invite, onProgress = { sentBytes = it }, onStopping = { status = it },
+            context, selected, invite, cableMode,
+            onProgress = { count, approved ->
+                if (status == Status.WaitingForComputer && approved) status = Status.Sending
+                if (status != Status.WaitingForComputer) sentBytes = count
+            },
+            onStopping = { status = it },
         ) { result, count ->
             operation = null
             if (result == Status.Unsupported || result == Status.GrantLost || result == Status.Saved || result.unconfirmed) {
                 source = null
             }
-            sentBytes = count
+            sentBytes = count?.takeUnless { cableMode && it == 0L && result != Status.Saved }
             status = result
         }
         operation = attempt
         if (attempt == null) {
             status = Status.Busy
         } else {
-            sentBytes = if (attempt.sending) 0L else null
-            status = if (attempt.sending) Status.Sending else Status.Reading
+            sentBytes = if (attempt.sending && !cableMode) 0L else null
+            status = when {
+                cableMode -> Status.WaitingForComputer
+                attempt.sending -> Status.Sending
+                else -> Status.Reading
+            }
         }
     }
 
@@ -552,11 +627,18 @@ private class IntakeState : ViewModel() {
 }
 
 private sealed class Status(val message: Int) {
-    val working: Boolean get() = this == Reading || this == Sending || this == Cancelling || this == TimingOut
+    val canCancel: Boolean get() = this == WaitingForComputer || this == Reading || this == Sending
+    val working: Boolean get() = canCancel || this == Cancelling || this == TimingOut
+    val canRetryCable: Boolean
+        get() = this == CableUnavailable || this == SendTimedOut || this == SendCancelled ||
+            this == SendFailed || this == Declined
     val unconfirmed: Boolean get() = this == Unconfirmed || this == UnconfirmedAfterCancel || this == UnconfirmedAfterTimeout
 
     data object Idle : Status(R.string.share_hint)
     data object Ready : Status(R.string.file_ready)
+    data object WaitingForComputer : Status(R.string.waiting_for_computer)
+    data object CableUnavailable : Status(R.string.open_seam_on_computer)
+    data object Declined : Status(R.string.send_declined)
     data object Sending : Status(R.string.sending)
     data object Unconfirmed : Status(R.string.save_unconfirmed)
     data object UnconfirmedAfterCancel : Status(R.string.save_unconfirmed_cancelled)
@@ -587,6 +669,7 @@ private fun IntakeScreen(
     status: Status,
     sentBytes: Long?,
     hasSource: Boolean,
+    cableMode: Boolean,
     invitation: String,
     address: String?,
     scanMessage: Int?,
@@ -595,6 +678,8 @@ private fun IntakeScreen(
     onSend: () -> Unit,
     onCheck: () -> Unit,
     onPick: () -> Unit,
+    onRetryCable: () -> Unit,
+    onUseWifi: () -> Unit,
     onCancel: () -> Unit,
 ) {
     val focus = LocalFocusManager.current
@@ -627,10 +712,19 @@ private fun IntakeScreen(
                 if (status.unconfirmed || status == Status.Interrupted) {
                     Text(stringResource(R.string.check_computer))
                 }
-                if (status == Status.Reading || status == Status.Sending) {
+                if (status.canCancel) {
                     Button(onClick = onCancel) { Text(stringResource(R.string.cancel)) }
                 }
-                if (!status.working) {
+                if (!status.working && cableMode && hasSource) {
+                    if (status == Status.CableUnavailable) Text(stringResource(R.string.connect_usb))
+                    if (status.canRetryCable) {
+                        Button(onClick = onRetryCable) { Text(stringResource(R.string.try_cable_again)) }
+                    }
+                    if (status == Status.CableUnavailable && supportsLanSend) {
+                        TextButton(onClick = onUseWifi) { Text(stringResource(R.string.use_wifi)) }
+                    }
+                }
+                if (!status.working && (!cableMode || !hasSource)) {
                     if (hasSource) {
                         if (supportsLanSend && status != Status.TlsUnavailable) {
                             TextButton(onClick = { focus.clearFocus(); onScan() }) {

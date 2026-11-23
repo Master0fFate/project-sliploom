@@ -14,6 +14,12 @@
     <string name="invalid_invitation">Enter a valid invitation.</string>
     <string name="destination">Destination: %1$s</string>
     <string name="send">Send</string>
+    <string name="waiting_for_computer">Waiting for computer</string>
+    <string name="open_seam_on_computer">Open SEAM on your computer</string>
+    <string name="connect_usb">Connect your phone to your computer with a USB cable, then try again.</string>
+    <string name="try_cable_again">Try cable again</string>
+    <string name="use_wifi">Use Wi-Fi</string>
+    <string name="send_declined">The computer declined the file.</string>
     <string name="sending">Sending</string>
     <string name="bytes_sent">Bytes sent: %1$d</string>
     <string name="saved_on_computer">Saved on computer</string>
