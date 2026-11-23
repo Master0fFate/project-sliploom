@@ -2,7 +2,12 @@
     <string name="app_name">SEAM</string>
     <string name="share_hint">Pick one image or PDF, or share it to SEAM from another app.</string>
     <string name="pick_file">Pick a file</string>
-    <string name="file_ready">Enter the invitation from your computer.</string>
+    <string name="file_ready">Scan or enter the invitation from your computer.</string>
+    <string name="scan_invitation">Scan invitation</string>
+    <string name="scan_prompt">Point the camera at the invitation QR code.</string>
+    <string name="scan_unavailable">Camera unavailable. Enter the invitation manually.</string>
+    <string name="scan_no_result">No invitation scanned. Try again or enter it manually.</string>
+    <string name="scan_invalid">This QR code is not a valid invitation.</string>
     <string name="invitation">Invitation</string>
     <string name="invalid_invitation">Enter a valid invitation.</string>
     <string name="destination">Destination: %1$s</string>

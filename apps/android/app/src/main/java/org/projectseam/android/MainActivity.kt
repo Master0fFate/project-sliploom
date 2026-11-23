@@ -1,5 +1,6 @@
 package org.projectseam.android
 
+import android.content.ActivityNotFoundException
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
@@ -11,6 +12,7 @@ import android.os.CancellationSignal
 import android.os.OperationCanceledException
 import android.os.Process
 import android.view.View
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -55,6 +57,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.google.zxing.client.android.Intents
+import com.journeyapps.barcodescanner.CaptureActivity
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -73,6 +79,21 @@ class MainActivity : ComponentActivity() {
     private var foreground = false
     private var invitation by mutableStateOf("")
     private var parsedInvite by mutableStateOf<LanInvite?>(null)
+    private var scanMessage by mutableStateOf<Int?>(null)
+    private val scanner = registerForActivityResult(ScanContract()) { result ->
+        if (intake.finishScan() && pendingIntent == null && !intake.status.working) {
+            val contents = result.contents
+            editInvitation("")
+            parsedInvite = contents?.let(LanInvite::parse)
+            scanMessage = when {
+                parsedInvite != null -> null
+                contents != null -> R.string.scan_invalid
+                result.originalIntent?.getBooleanExtra(Intents.Scan.MISSING_CAMERA_PERMISSION, false) == true ->
+                    R.string.scan_unavailable
+                else -> R.string.scan_no_result
+            }
+        }
+    }
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             editInvitation("")
@@ -105,6 +126,8 @@ class MainActivity : ComponentActivity() {
                 hasSource = intake.hasSource,
                 invitation = invitation,
                 address = parsedInvite?.address,
+                scanMessage = scanMessage,
+                onScan = ::scanInvitation,
                 onInvitationChanged = { value ->
                     if (foreground && intake.hasSource && !intake.status.working) editInvitation(value)
                 },
@@ -161,11 +184,40 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        editInvitation("")
         intake.cancel()
         super.onStop()
     }
 
+    private fun scanInvitation() {
+        if (!foreground || !intake.hasSource || intake.status.working) return
+        if (!packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) {
+            scanMessage = R.string.scan_unavailable
+            return
+        }
+        if (!intake.beginScan()) return
+        editInvitation("")
+        val options = ScanOptions()
+            .setCaptureActivity(InvitationCaptureActivity::class.java)
+            .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            .setPrompt(getString(R.string.scan_prompt))
+            .setOrientationLocked(false)
+            .setBeepEnabled(false)
+            .setBarcodeImageEnabled(false)
+            .addExtra(Intents.Scan.SHOW_MISSING_CAMERA_PERMISSION_DIALOG, false)
+        try {
+            scanner.launch(options)
+        } catch (_: ActivityNotFoundException) {
+            intake.finishScan()
+            scanMessage = R.string.scan_unavailable
+        } catch (_: SecurityException) {
+            intake.finishScan()
+            scanMessage = R.string.scan_unavailable
+        }
+    }
+
     private fun editInvitation(value: String) {
+        scanMessage = null
         invitation = value
         parsedInvite = if (value.isEmpty()) null else LanInvite.parse(value)
     }
@@ -191,6 +243,13 @@ class MainActivity : ComponentActivity() {
             return
         }
         intake.select(uri, type)
+    }
+}
+
+class InvitationCaptureActivity : CaptureActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        super.onCreate(savedInstanceState)
     }
 }
 
@@ -386,6 +445,7 @@ private class IntakeState : ViewModel() {
     var sentBytes by mutableStateOf<Long?>(null)
         private set
     private var source by mutableStateOf<Source?>(null)
+    private var scanSource: Source? = null
     private var operation: Operation? = null
     val hasSource: Boolean get() = source != null
     val savePossible: Boolean
@@ -408,6 +468,18 @@ private class IntakeState : ViewModel() {
                 status = Status.Ready
             }
         }
+    }
+
+    fun beginScan(): Boolean {
+        if (scanSource != null) return false
+        scanSource = source ?: return false
+        return true
+    }
+
+    fun finishScan(): Boolean {
+        val scannedFor = scanSource
+        scanSource = null
+        return scannedFor != null && scannedFor === source
     }
 
     fun start(context: Context, invite: LanInvite?) {
@@ -468,6 +540,8 @@ private fun IntakeScreen(
     hasSource: Boolean,
     invitation: String,
     address: String?,
+    scanMessage: Int?,
+    onScan: () -> Unit,
     onInvitationChanged: (String) -> Unit,
     onSend: () -> Unit,
     onCheck: () -> Unit,
@@ -509,6 +583,12 @@ private fun IntakeScreen(
                 }
                 if (!status.working) {
                     if (hasSource) {
+                        TextButton(onClick = { focus.clearFocus(); onScan() }) {
+                            Text(stringResource(R.string.scan_invitation))
+                        }
+                        scanMessage?.let {
+                            Text(stringResource(it), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                        }
                         OutlinedTextField(
                             modifier = Modifier.fillMaxWidth(),
                             value = invitation,

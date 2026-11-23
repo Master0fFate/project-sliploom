@@ -40,5 +40,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.core:core:1.17.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("com.google.zxing:core:3.4.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 }

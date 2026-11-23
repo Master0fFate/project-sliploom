@@ -1,10 +1,19 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <application
         android:allowBackup="false"
         android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.NoActionBar">
+        <activity android:name="com.journeyapps.barcodescanner.CaptureActivity" tools:node="remove" />
+        <activity
+            android:name=".InvitationCaptureActivity"
+            android:exported="false"
+            android:hardwareAccelerated="true"
+            android:stateNotNeeded="true"
+            android:theme="@style/zxing_CaptureTheme" />
         <activity
             android:name=".MainActivity"
             android:exported="true">
