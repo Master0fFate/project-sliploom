@@ -468,6 +468,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workers = cable_ui::Workers::default();
     let glass = native_glass();
     let result = Application::new()
+        .font(material::roboto()?)
         .window(WindowOptions {
             title: "SEAM".into(),
             width: 480.,

@@ -1,13 +1,19 @@
 use zgx::canvas::{Canvas, LineCap, LineJoin, Path, Stroke};
 use zgx::compose::prelude::*;
 use zgx::scene::Color;
-use zgx_desktop::{Glass, WindowContext};
+use zgx_desktop::{FontData, Glass, WindowContext};
+
+const FONT_FAMILY: &str = "Roboto";
 
 const INK: Color = Color(16, 16, 16, 255);
 const PAPER: Color = Color(250, 250, 250, 255);
 const MUTED: Color = Color(189, 189, 189, 255);
 const CONTROL: Color = Color(39, 39, 39, 255);
 const EDGE: Color = Color(119, 119, 119, 255);
+
+pub(crate) fn roboto() -> Result<FontData, &'static str> {
+    FontData::new(include_bytes!("../assets/Roboto.ttf").as_slice())
+}
 
 pub(crate) fn native_glass() -> Option<Glass> {
     #[cfg(windows)]
@@ -48,11 +54,7 @@ pub(crate) fn backdrop(cx: &WindowContext, native_glass: bool) -> View {
     column()
         .w_full()
         .h_full()
-        .font_family(if cfg!(windows) {
-            "Segoe UI"
-        } else {
-            "sans-serif"
-        })
+        .font_family(FONT_FAMILY)
         .reactive_style(move || {
             let preferences = theme.system_preferences();
             Styles::new().bg(
@@ -82,24 +84,30 @@ pub(crate) fn pane(content: View) -> View {
 }
 
 pub(crate) fn wordmark() -> View {
+    const MARK_WIDTH: f32 = 36.;
+    const MARK_HEIGHT: f32 = 16.;
+    const CAP_CENTER_OFFSET: f32 = -0.25;
     let mark = canvas(|_| {
-        let x = |source_x: f32| 18. + (source_x - 54.) * (2. / 3.);
+        let top = MARK_HEIGHT * 0.26;
+        let bottom = MARK_HEIGHT * 0.74;
+        let start = 2.;
+        let end = MARK_WIDTH - start;
         let mut path = Path::builder();
-        path.move_to(x(30.), 4.)
-            .line_to(x(50.), 4.)
-            .line_to(x(60.), 12.)
-            .line_to(x(78.), 12.)
-            .move_to(x(30.), 12.)
-            .line_to(x(46.), 12.)
-            .move_to(x(64.), 4.)
-            .line_to(x(78.), 4.);
+        path.move_to(start, top)
+            .line_to(MARK_WIDTH * 0.42, top)
+            .line_to(MARK_WIDTH * 0.62, bottom)
+            .line_to(end, bottom)
+            .move_to(start, bottom)
+            .line_to(MARK_WIDTH * 0.36, bottom)
+            .move_to(MARK_WIDTH * 0.68, top)
+            .line_to(end, top);
         let mut drawing = Canvas::new();
         if let Ok(path) = path.build() {
             drawing.stroke(
                 path,
                 PAPER,
                 Stroke {
-                    width: 2.,
+                    width: 1.75,
                     cap: LineCap::Round,
                     join: LineJoin::Round,
                     ..Stroke::default()
@@ -108,11 +116,13 @@ pub(crate) fn wordmark() -> View {
         }
         drawing
     })
-    .size(36., 16.);
+    .size(MARK_WIDTH, MARK_HEIGHT)
+    .translate(0., CAP_CENTER_OFFSET);
     row().shrink_0().gap(8.).items_center().child(mark).child(
         text("SEAM")
             .text_size(14.)
             .font_weight(600)
+            .letter_spacing(2.)
             .text_color(PAPER),
     )
 }
