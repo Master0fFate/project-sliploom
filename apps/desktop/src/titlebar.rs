@@ -26,13 +26,14 @@ pub(crate) fn view(cx: &WindowContext) -> View {
                 .tooltip("Minimize"),
         )
         .child(
-            menu(
-                "Window size",
-                cx.ui.runtime.signal(false),
-                control(Glyph::Size, "Window size"),
-            )
-            .child(menu_item("Maximize").on_click(move || maximize.set_maximized(true)))
-            .child(menu_item("Restore").on_click(move || restore.set_maximized(false))),
+            control(Glyph::Maximize, "Maximize")
+                .on_click(move || maximize.set_maximized(true))
+                .tooltip("Maximize"),
+        )
+        .child(
+            control(Glyph::Restore, "Restore")
+                .on_click(move || restore.set_maximized(false))
+                .tooltip("Restore"),
         )
         .child(
             control(Glyph::Close, "Close")
@@ -43,7 +44,7 @@ pub(crate) fn view(cx: &WindowContext) -> View {
 
 fn control(glyph: Glyph, label: &'static str) -> View {
     button()
-        .size(36., 26.)
+        .size(36., 30.)
         .shrink_0()
         .p(0.)
         .items_center()
@@ -61,7 +62,8 @@ fn control(glyph: Glyph, label: &'static str) -> View {
 #[derive(Clone, Copy)]
 enum Glyph {
     Minimize,
-    Size,
+    Maximize,
+    Restore,
     Close,
 }
 
@@ -73,8 +75,16 @@ impl Glyph {
             Self::Minimize => {
                 path.move_to(1.5, 6.).line_to(10.5, 6.);
             }
-            Self::Size => {
+            Self::Maximize => {
                 path.append(&Path::rectangle(Rect::new(1.5, 1.5, 9., 9.)));
+            }
+            Self::Restore => {
+                path.append(&Path::rectangle(Rect::new(1.5, 4., 6.5, 6.5)));
+                path.move_to(4., 4.)
+                    .line_to(4., 1.5)
+                    .line_to(10.5, 1.5)
+                    .line_to(10.5, 8.)
+                    .line_to(8., 8.);
             }
             Self::Close => {
                 path.move_to(2.5, 2.5)
