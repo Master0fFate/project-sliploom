@@ -1,8 +1,10 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+use std::cell::RefCell;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
@@ -44,7 +46,22 @@ struct Screen {
     activity: Signal<Activity>,
     status: Signal<String>,
     invitation: Signal<String>,
+    worker: WifiWorker,
+}
+
+#[derive(Clone, Default)]
+struct WifiWorker {
     cancel: Arc<AtomicBool>,
+    thread: Rc<RefCell<Option<thread::JoinHandle<()>>>>,
+}
+
+impl WifiWorker {
+    fn shutdown(&self) {
+        self.cancel.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.borrow_mut().take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 enum Event {
@@ -74,8 +91,8 @@ impl Screen {
         }
 
         let (tx, rx) = mpsc::channel();
-        self.cancel.store(false, Ordering::Release);
-        let cancel = self.cancel.clone();
+        self.worker.cancel.store(false, Ordering::Release);
+        let cancel = self.worker.cancel.clone();
         let worker = thread::Builder::new()
             .name("seam-receive".into())
             .spawn(move || {
@@ -125,10 +142,11 @@ impl Screen {
                 };
                 let _ = tx.send(Event::Finished(message));
             });
-        if worker.is_err() {
+        let Ok(worker) = worker else {
             self.status.set("Couldn’t start the receiver.".into());
             return;
-        }
+        };
+        self.worker.thread.replace(Some(worker));
 
         self.activity.set(Activity::Receiving);
         self.status.set("Starting…".into());
@@ -167,7 +185,7 @@ impl Screen {
 
     fn stop(&self) {
         if self.activity.get() == Activity::Receiving {
-            self.cancel.store(true, Ordering::Release);
+            self.worker.cancel.store(true, Ordering::Release);
             self.activity.set(Activity::Cancelling);
             self.invitation.set(String::new());
             self.status.set("Cancelling…".into());
@@ -360,6 +378,7 @@ fn wifi_view(
 fn receive_screen(
     cx: &mut WindowContext,
     glass: bool,
+    wifi_worker: WifiWorker,
     #[cfg(target_os = "windows")] workers: cable_ui::Workers,
 ) {
     cx.window.set_theme(Some(zgx::theme::Appearance::Dark));
@@ -371,9 +390,9 @@ fn receive_screen(
         activity: runtime.signal(Activity::Idle),
         status: runtime.signal(String::new()),
         invitation: runtime.signal(String::new()),
-        cancel: Arc::new(AtomicBool::new(false)),
+        worker: wifi_worker,
     };
-    let cancel = screen.cancel.clone();
+    let cancel = screen.worker.cancel.clone();
     cx.on_closed(move || cancel.store(true, Ordering::Release));
     #[cfg(target_os = "windows")]
     let cable = cable_ui::Cable::new(cx, workers);
@@ -466,6 +485,7 @@ fn receive_screen(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     let workers = cable_ui::Workers::default();
+    let wifi_worker = WifiWorker::default();
     let glass = native_glass();
     let result = Application::new()
         .font(material::roboto()?)
@@ -482,10 +502,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             receive_screen(
                 cx,
                 glass.is_some(),
+                wifi_worker.clone(),
                 #[cfg(target_os = "windows")]
                 workers.clone(),
             )
         });
+    wifi_worker.shutdown();
     #[cfg(target_os = "windows")]
     workers.shutdown();
     result
