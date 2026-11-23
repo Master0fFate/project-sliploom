@@ -1,6 +1,6 @@
-use zgx::canvas::{Canvas, Path, Point, Stroke};
+use zgx::canvas::{Canvas, LineCap, LineJoin, Path, Stroke};
 use zgx::compose::prelude::*;
-use zgx::scene::{Color, Rect};
+use zgx::scene::Color;
 use zgx_desktop::{Glass, WindowContext};
 
 const INK: Color = Color(16, 16, 16, 255);
@@ -76,24 +76,46 @@ pub(crate) fn pane(content: View) -> View {
         .bg(Color(30, 30, 30, 230))
         .border(1.)
         .border_color(Color(250, 250, 250, 46))
-        .child(
-            canvas(|_| {
-                let mut drawing = Canvas::new();
-                drawing.fill(Path::rectangle(Rect::new(0., 4., 24., 2.)), MUTED);
-                drawing.fill(Path::rectangle(Rect::new(16., 12., 24., 2.)), MUTED);
-                drawing.stroke(
-                    Path::line(Point::new(16., 13.), Point::new(24., 5.)).unwrap(),
-                    PAPER,
-                    Stroke {
-                        width: 2.,
-                        ..Stroke::default()
-                    },
-                );
-                drawing
-            })
-            .size(40., 16.),
-        )
+        .child(wordmark())
         .child(content)
+}
+
+fn wordmark() -> View {
+    let mark = canvas(|_| {
+        const WIDTH: f32 = 36.;
+        const TOP: f32 = 16. * 0.26;
+        const BOTTOM: f32 = 16. * 0.74;
+        let mut path = Path::builder();
+        path.move_to(2., TOP)
+            .line_to(WIDTH * 0.42, TOP)
+            .line_to(WIDTH * 0.62, BOTTOM)
+            .line_to(WIDTH - 2., BOTTOM)
+            .move_to(2., BOTTOM)
+            .line_to(WIDTH * 0.36, BOTTOM)
+            .move_to(WIDTH * 0.68, TOP)
+            .line_to(WIDTH - 2., TOP);
+        let mut drawing = Canvas::new();
+        if let Ok(path) = path.build() {
+            drawing.stroke(
+                path,
+                PAPER,
+                Stroke {
+                    width: 1.75,
+                    cap: LineCap::Round,
+                    join: LineJoin::Round,
+                    ..Stroke::default()
+                },
+            );
+        }
+        drawing
+    })
+    .size(36., 16.);
+    row().gap(8.).items_center().child(mark).child(
+        text("SEAM")
+            .text_size(14.)
+            .font_weight(600)
+            .text_color(PAPER),
+    )
 }
 
 pub(crate) fn headline(label: &str) -> View {
