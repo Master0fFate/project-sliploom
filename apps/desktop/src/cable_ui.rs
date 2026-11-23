@@ -278,8 +278,8 @@ impl Cable {
             "Receive image?"
         };
         let detail = prompt.bytes.map_or_else(
-            || "From the connected phone · Size not provided".into(),
-            |bytes| format!("From the connected phone · {bytes} bytes"),
+            || "Cable share · Size unknown".into(),
+            |bytes| format!("Cable share · {bytes} bytes"),
         );
         let no = prompt.clone();
         column()
@@ -405,6 +405,7 @@ fn receive(
         let mut outcome = "No file was saved. Share again from the phone to retry.";
         let mut next_progress = Instant::now();
         let result = receiver.receive_next(
+            cancel,
             connection,
             |offer| {
                 let (accepted, message) = approve(offer, cancel, connection, tx);
@@ -421,9 +422,6 @@ fn receive(
                 }
             },
         );
-        if stopped(cancel) || stopped(connection) {
-            return;
-        }
         match result {
             Ok(Some(receipt)) => {
                 let message = if receipt.confirmed {
@@ -433,6 +431,7 @@ fn receive(
                 };
                 status(tx, format!("{message} ({} bytes).", receipt.bytes));
             }
+            _ if stopped(cancel) || stopped(connection) => return,
             Ok(None) => status(tx, outcome),
             Err(_) => {
                 status(tx, outcome);

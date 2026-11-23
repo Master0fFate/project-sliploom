@@ -2,14 +2,14 @@ use std::{
     io::{self, Read, Write},
     net::{Ipv4Addr, TcpListener},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::AtomicBool,
     thread,
     time::{Duration, Instant},
 };
 
 use super::{
-    ACCEPT, AUTH_TIMEOUT, BoundedTcp, CheckedStream, IDLE_TIMEOUT, POLL_INTERVAL, Receipt,
-    TRANSFER_TIMEOUT, destination, read_offer, receive_file,
+    ACCEPT, AUTH_TIMEOUT, BoundedTcp, Cancellation, CheckedStream, IDLE_TIMEOUT, POLL_INTERVAL,
+    Receipt, TRANSFER_TIMEOUT, destination, read_offer, receive_file,
 };
 use crate::{Result, invalid};
 
@@ -54,12 +54,17 @@ impl CableReceiver {
 
     pub fn receive_next(
         &self,
-        cancelled: &AtomicBool,
+        worker_cancel: &AtomicBool,
+        connection_cancel: &AtomicBool,
         approve: impl FnMut(Offer) -> bool,
         progress: impl FnMut(u64),
     ) -> Result<Option<Receipt>> {
+        let cancelled = Cancellation {
+            worker: worker_cancel,
+            connection: Some(connection_cancel),
+        };
         match self.receive_request(cancelled, approve, progress) {
-            Err(_) if cancelled.load(Ordering::Relaxed) => Ok(None),
+            Err(_) if cancelled.is_cancelled() => Ok(None),
             Err(_) => Err("cable receive failed".into()),
             received => received,
         }
@@ -67,12 +72,12 @@ impl CableReceiver {
 
     fn receive_request(
         &self,
-        cancelled: &AtomicBool,
+        cancelled: Cancellation<'_>,
         mut approve: impl FnMut(Offer) -> bool,
         progress: impl FnMut(u64),
     ) -> Result<Option<Receipt>> {
         let socket = loop {
-            if cancelled.load(Ordering::Relaxed) {
+            if cancelled.is_cancelled() {
                 return Ok(None);
             }
             match self.listener.accept() {

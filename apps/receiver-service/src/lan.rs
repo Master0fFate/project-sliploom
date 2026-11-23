@@ -127,6 +127,10 @@ impl ReceiveSession {
     }
 
     fn accept_authenticated<'a>(&self, cancelled: &'a AtomicBool) -> Result<TlsStream<'a>> {
+        let cancelled = Cancellation {
+            worker: cancelled,
+            connection: None,
+        };
         for _ in 0..MAX_ATTEMPTS {
             let accepted = loop {
                 check_deadline(cancelled, self.expires_at)?;
@@ -208,15 +212,30 @@ fn check_directory(folder: &Path) -> io::Result<()> {
 
 type TlsStream<'a> = StreamOwned<ServerConnection, BoundedTcp<'a>>;
 
+#[derive(Clone, Copy)]
+struct Cancellation<'a> {
+    worker: &'a AtomicBool,
+    connection: Option<&'a AtomicBool>,
+}
+
+impl Cancellation<'_> {
+    fn is_cancelled(self) -> bool {
+        self.worker.load(Ordering::Acquire)
+            || self
+                .connection
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+    }
+}
+
 struct BoundedTcp<'a> {
     socket: TcpStream,
-    cancelled: &'a AtomicBool,
+    cancelled: Cancellation<'a>,
     deadline: Instant,
     idle_deadline: Instant,
 }
 
-fn check_deadline(cancelled: &AtomicBool, deadline: Instant) -> io::Result<()> {
-    if cancelled.load(Ordering::Relaxed) {
+fn check_deadline(cancelled: Cancellation<'_>, deadline: Instant) -> io::Result<()> {
+    if cancelled.is_cancelled() {
         return Err(io::Error::other("receive cancelled"));
     }
     if Instant::now() >= deadline {
