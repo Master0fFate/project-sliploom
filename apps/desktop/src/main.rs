@@ -19,6 +19,11 @@ use zgx::semantics::Live;
 use zgx::theme::tok;
 use zgx_desktop::{Application, FileDialogOptions, WindowContext, WindowOptions};
 
+#[cfg(target_os = "windows")]
+mod adb;
+#[cfg(target_os = "windows")]
+mod cable_ui;
+
 #[derive(Clone, Copy, PartialEq)]
 enum Activity {
     Idle,
@@ -155,6 +160,15 @@ impl Screen {
         });
     }
 
+    fn stop(&self) {
+        if self.activity.get() == Activity::Receiving {
+            self.cancel.store(true, Ordering::Release);
+            self.activity.set(Activity::Cancelling);
+            self.invitation.set(String::new());
+            self.status.set("Cancelling…".into());
+        }
+    }
+
     fn finish(&self, message: String) {
         self.invitation.set(String::new());
         self.status.set(message);
@@ -202,22 +216,13 @@ fn invitation_qr(code: QrCode) -> View {
     .size(size, size)
 }
 
-fn receive_screen(cx: &mut WindowContext) {
-    let runtime = &cx.ui.runtime;
-    let screen = Screen {
-        address: runtime.signal(likely_address().map_or_else(String::new, |ip| ip.to_string())),
-        folder: runtime.signal(None),
-        activity: runtime.signal(Activity::Idle),
-        status: runtime.signal(String::new()),
-        invitation: runtime.signal(String::new()),
-        cancel: Arc::new(AtomicBool::new(false)),
-    };
-    let cancel = screen.cancel.clone();
-    cx.on_closed(move || cancel.store(true, Ordering::Release));
-
-    let dialogs = cx.dialogs.clone();
-    let tasks = cx.tasks.clone();
+fn wifi_view(
+    screen: Screen,
+    dialogs: zgx_desktop::FileDialogs,
+    tasks: zgx_desktop::TaskSpawner,
+) -> View {
     let picking = screen.clone();
+    let picker_tasks = tasks.clone();
     let pick_folder = move || {
         if picking.activity.get() != Activity::Idle {
             return;
@@ -225,7 +230,7 @@ fn receive_screen(cx: &mut WindowContext) {
         picking.activity.set(Activity::PickingFolder);
         let dialogs = dialogs.clone();
         let picking = picking.clone();
-        tasks.spawn(async move {
+        picker_tasks.spawn(async move {
             let mut options = FileDialogOptions::new("Choose save folder");
             if let Some(folder) = picking.folder.get() {
                 options = options.directory(folder);
@@ -250,15 +255,13 @@ fn receive_screen(cx: &mut WindowContext) {
     let controls_disabled = move || activity.get() != Activity::Idle;
     let activity = screen.activity.clone();
     let actions = screen.clone();
-    let tasks = cx.tasks.clone();
     let status = screen.status.clone();
     let folder = screen.folder.clone();
     let invitation = screen.invitation.clone();
     let invitation_visible = invitation.clone();
-    let content = column()
-        .p(24.)
+    column()
         .gap(16.)
-        .child(text("Receive a file").heading(1).text_size(24.))
+        .child(text("Receive over Wi-Fi").heading(1).text_size(24.))
         .child(
             column().gap(6.).child(text("Private IPv4 address")).child(
                 text_input("Private IPv4 address", screen.address)
@@ -299,12 +302,7 @@ fn receive_screen(cx: &mut WindowContext) {
                     button()
                         .child(text("Cancel"))
                         .disabled_when(move || activity.get() == Activity::Cancelling)
-                        .on_click(move || {
-                            screen.cancel.store(true, Ordering::Release);
-                            screen.activity.set(Activity::Cancelling);
-                            screen.invitation.set(String::new());
-                            screen.status.set("Cancelling…".into());
-                        })
+                        .on_click(move || screen.stop())
                 } else {
                     button()
                         .child(text("Receive once"))
@@ -349,18 +347,100 @@ fn receive_screen(cx: &mut WindowContext) {
                             .border_color(tok::BORDER_STRONG),
                     )
             },
-        ));
+        ))
+}
+
+fn receive_screen(
+    cx: &mut WindowContext,
+    #[cfg(target_os = "windows")] workers: cable_ui::Workers,
+) {
+    let runtime = &cx.ui.runtime;
+    let wifi = runtime.signal(false);
+    let screen = Screen {
+        address: runtime.signal(String::new()),
+        folder: runtime.signal(None),
+        activity: runtime.signal(Activity::Idle),
+        status: runtime.signal(String::new()),
+        invitation: runtime.signal(String::new()),
+        cancel: Arc::new(AtomicBool::new(false)),
+    };
+    let cancel = screen.cancel.clone();
+    cx.on_closed(move || cancel.store(true, Ordering::Release));
+    #[cfg(target_os = "windows")]
+    let cable = cable_ui::Cable::new(cx, workers);
+    let mode = wifi.clone();
+    let body_mode = wifi.clone();
+    let dialogs = cx.dialogs.clone();
+    let tasks = cx.tasks.clone();
+    let wifi_screen = screen.clone();
+    #[cfg(target_os = "windows")]
+    let cable_screen = cable.clone();
     let offset = cx.ui.runtime.signal(0.);
+    let reset_scroll = offset.clone();
+    let content = switch(
+        move || body_mode.get(),
+        move |wifi_active, _| {
+            let view = if wifi_active {
+                wifi_view(wifi_screen.clone(), dialogs.clone(), tasks.clone())
+            } else {
+                #[cfg(target_os = "windows")]
+                let view = cable_screen.view();
+                #[cfg(not(target_os = "windows"))]
+                let view = column()
+                    .gap(12.)
+                    .child(text("Receive by cable").heading(1).text_size(24.))
+                    .child(text("Cable receive is available on Windows.").text_wrap(true));
+                view
+            };
+            column().p(24.).child(view)
+        },
+    );
+    let mode_label = wifi.clone();
     cx.render(
-        scroll(offset)
-            .scrollbar(true)
+        column()
             .bg(tok::SURFACE_BASE)
-            .child(content),
+            .child(
+                scroll(offset)
+                    .grow()
+                    .min_h(0.)
+                    .scrollbar(true)
+                    .child(content),
+            )
+            .child(
+                row().p(16.).bg(tok::SURFACE_RAISED).child(
+                    button()
+                        .h(44.)
+                        .child(text_signal(move || {
+                            if mode_label.get() {
+                                "Use cable instead"
+                            } else {
+                                "Use Wi-Fi instead"
+                            }
+                            .into()
+                        }))
+                        .on_click(move || {
+                            let wifi_active = mode.get();
+                            if wifi_active {
+                                screen.stop();
+                            } else if screen.address.with(String::is_empty)
+                                && let Some(ip) = likely_address()
+                            {
+                                screen.address.set(ip.to_string());
+                            }
+                            #[cfg(target_os = "windows")]
+                            cable.enable(wifi_active);
+                            mode.set(!wifi_active);
+                            reset_scroll.set(0.);
+                        }),
+                ),
+            ),
     );
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    Application::new()
+    #[cfg(target_os = "windows")]
+    let workers = cable_ui::Workers::default();
+    let result = Application::new()
         .window(WindowOptions {
             title: "SEAM".into(),
             width: 560.,
@@ -368,5 +448,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             min_size: Some((440., 440.)),
             ..Default::default()
         })
-        .run(receive_screen)
+        .run(|cx| {
+            receive_screen(
+                cx,
+                #[cfg(target_os = "windows")]
+                workers.clone(),
+            )
+        });
+    #[cfg(target_os = "windows")]
+    workers.shutdown();
+    result
 }
