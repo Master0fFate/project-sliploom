@@ -35,10 +35,28 @@ impl PartialEq for Prompt {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReceiptOutcome {
+    Saved(u64),
+    SavedWithUncertainConfirmation(u64),
+}
+
+impl ReceiptOutcome {
+    fn message(self) -> String {
+        match self {
+            Self::Saved(bytes) => format!("Saved here ({bytes} bytes)."),
+            Self::SavedWithUncertainConfirmation(bytes) => {
+                format!("Saved here ({bytes} bytes). The phone may not have received confirmation.")
+            }
+        }
+    }
+}
+
 enum Event {
     Status(String),
     Folder(PathBuf),
     Prompt(Prompt),
+    Receipt(ReceiptOutcome),
 }
 
 #[derive(Default, Clone)]
@@ -70,6 +88,7 @@ pub(crate) struct Cable {
     status: Signal<String>,
     folder: Signal<Option<PathBuf>>,
     prompt: Signal<Option<Prompt>>,
+    receipt: Signal<Option<ReceiptOutcome>>,
     retry: Signal<bool>,
     workers: Workers,
     tasks: TaskSpawner,
@@ -83,6 +102,7 @@ impl Cable {
             status: runtime.signal(String::new()),
             folder: runtime.signal(None),
             prompt: runtime.signal(None),
+            receipt: runtime.signal(None),
             retry: runtime.signal(false),
             workers,
             tasks: cx.tasks.clone(),
@@ -172,11 +192,17 @@ impl Cable {
                 Ok(Event::Folder(path)) => {
                     self.folder.set(Some(path));
                 }
-                Ok(Event::Prompt(prompt)) if prompt.deadline > Instant::now() => {
-                    self.prompt.set(Some(prompt));
-                    self.status.set(String::new());
+                Ok(Event::Prompt(prompt)) => {
+                    self.receipt.set(None);
+                    if prompt.deadline > Instant::now() {
+                        self.prompt.set(Some(prompt));
+                        self.status.set(String::new());
+                    }
                 }
-                Ok(Event::Prompt(_)) => {}
+                Ok(Event::Receipt(receipt)) => {
+                    self.status.set(WAITING.into());
+                    self.receipt.set(Some(receipt));
+                }
                 Err(TryRecvError::Disconnected) => return,
                 Err(TryRecvError::Empty) => zgx::timer::sleep(TICK).await,
             }
@@ -211,6 +237,7 @@ impl Cable {
                     return ui.prompt_view(prompt);
                 }
                 let status = status.clone();
+                let receipt = ui.receipt.clone();
                 let actions = ui.clone();
                 let retry = retry.clone();
                 let folder = folder.clone();
@@ -220,7 +247,11 @@ impl Cable {
                         column()
                             .gap(8.)
                             .child(headline("Receive by cable"))
-                            .child(metadata(text_signal(move || status.get())).live(Live::Polite)),
+                            .child(metadata(text_signal(move || status.get())).live(Live::Polite))
+                            .child_when(
+                                move || receipt.get(),
+                                |receipt, _| metadata(text(receipt.message())).live(Live::Polite),
+                            ),
                     )
                     .child(switch(
                         move || (retry.get(), folder.with(Option::is_some)),
@@ -403,12 +434,12 @@ fn receive(
         );
         match result {
             Ok(Some(receipt)) => {
-                let message = if receipt.confirmed {
-                    "Saved"
+                let outcome = if receipt.confirmed {
+                    ReceiptOutcome::Saved(receipt.bytes)
                 } else {
-                    "Saved here; the phone may not have received confirmation"
+                    ReceiptOutcome::SavedWithUncertainConfirmation(receipt.bytes)
                 };
-                status(tx, format!("{message} ({} bytes).", receipt.bytes));
+                let _ = tx.send(Event::Receipt(outcome));
             }
             _ if stopped(cancel) || stopped(connection) => return,
             Ok(None) => status(tx, outcome),
