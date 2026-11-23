@@ -13,6 +13,8 @@ use rustls::{
 };
 use sha2::{Digest, Sha256};
 
+pub mod lan;
+
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 pub const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
 pub const ACK: [u8; 4] = *b"ACK\x01";
