@@ -21,6 +21,8 @@ use time::OffsetDateTime;
 
 use crate::{MAX_BYTES, Result, check_length, invalid};
 
+pub mod cable;
+
 const INVITATION_LIFETIME: Duration = Duration::from_secs(120);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -120,7 +122,8 @@ impl ReceiveSession {
         stream.sock.idle_deadline = now + IDLE_TIMEOUT;
         stream.write_all(&ACCEPT)?;
         stream.flush()?;
-        receive_file(&mut stream, &folder, progress)
+        let offer = read_offer(&mut stream)?;
+        receive_file(&mut stream, &folder, offer, progress)
     }
 
     fn accept_authenticated<'a>(&self, cancelled: &'a AtomicBool) -> Result<TlsStream<'a>> {
@@ -222,11 +225,23 @@ fn check_deadline(cancelled: &AtomicBool, deadline: Instant) -> io::Result<()> {
     Ok(())
 }
 
-impl BoundedTcp<'_> {
+trait CheckedStream: Read + Write {
+    fn check(&self) -> io::Result<()>;
+}
+
+impl CheckedStream for TlsStream<'_> {
+    fn check(&self) -> io::Result<()> {
+        self.sock.check()
+    }
+}
+
+impl CheckedStream for BoundedTcp<'_> {
     fn check(&self) -> io::Result<()> {
         check_deadline(self.cancelled, self.deadline.min(self.idle_deadline))
     }
+}
 
+impl BoundedTcp<'_> {
     fn poll_io(
         &mut self,
         mut op: impl FnMut(&mut TcpStream) -> io::Result<usize>,
@@ -279,37 +294,45 @@ fn authenticate(stream: &mut TlsStream<'_>, token: &[u8; 32]) -> io::Result<()> 
     Ok(())
 }
 
-fn frame_header(stream: &mut TlsStream<'_>) -> io::Result<(u8, u32)> {
-    stream.sock.check()?;
+fn frame_header(stream: &mut impl CheckedStream) -> io::Result<(u8, u32)> {
+    stream.check()?;
     let mut header = [0; 5];
     stream.read_exact(&mut header)?;
     let [kind, a, b, c, d] = header;
     Ok((kind, u32::from_be_bytes([a, b, c, d])))
 }
 
-fn read_frame<const N: usize>(stream: &mut TlsStream<'_>, kind: u8) -> io::Result<[u8; N]> {
+fn read_frame<const N: usize>(stream: &mut impl CheckedStream, kind: u8) -> io::Result<[u8; N]> {
     if frame_header(stream)? != (kind, N as u32) {
         return Err(invalid("unexpected SEAM frame"));
     }
     let mut payload = [0; N];
     stream.read_exact(&mut payload)?;
-    stream.sock.check()?;
+    stream.check()?;
     Ok(payload)
 }
 
-fn receive_file(
-    stream: &mut TlsStream<'_>,
-    folder: &Path,
-    mut progress: impl FnMut(u64),
-) -> Result<Receipt> {
+fn read_offer(stream: &mut impl CheckedStream) -> io::Result<cable::Offer> {
     let [kind, size @ ..] = read_frame::<9>(stream, 0x03)?;
     if !matches!(kind, 0x01 | 0x02) {
-        return Err(invalid("unsupported file kind").into());
+        return Err(invalid("unsupported file kind"));
     }
     let size = u64::from_be_bytes(size);
-    let known = size != u64::MAX;
-    let limit = if known { size } else { MAX_BYTES };
-    check_length(limit)?;
+    let bytes = (size != u64::MAX).then_some(size);
+    check_length(bytes.unwrap_or(MAX_BYTES))?;
+    Ok(cable::Offer {
+        is_pdf: kind == 0x02,
+        bytes,
+    })
+}
+
+fn receive_file(
+    stream: &mut impl CheckedStream,
+    folder: &Path,
+    offer: cable::Offer,
+    mut progress: impl FnMut(u64),
+) -> Result<Receipt> {
+    let limit = offer.bytes.unwrap_or(MAX_BYTES);
 
     check_directory(folder)?;
     let mut staging = NamedTempFile::new_in(folder)?;
@@ -326,7 +349,7 @@ fn receive_file(
                 }
                 let data = &mut chunk[..count as usize];
                 stream.read_exact(data)?;
-                stream.sock.check()?;
+                stream.check()?;
                 staging.write_all(data)?;
                 digest.update(&*data);
                 if bytes < prefix.len() as u64 {
@@ -340,7 +363,7 @@ fn receive_file(
             (0x05, 40) => {
                 let mut end = [0; 40];
                 stream.read_exact(&mut end)?;
-                if (known && size != bytes)
+                if offer.bytes.is_some_and(|size| size != bytes)
                     || end[..8] != bytes.to_be_bytes()
                     || end[8..] != digest.finalize()[..]
                 {
@@ -352,18 +375,18 @@ fn receive_file(
         }
     };
 
-    stream.sock.check()?;
+    stream.check()?;
     staging.as_file().sync_all()?;
     let prefix = &prefix[..bytes.min(prefix.len() as u64) as usize];
-    let (label, extension) = if kind == 0x01 {
-        ("image", image_extension(prefix))
-    } else {
+    let (label, extension) = if offer.is_pdf {
         ("document", "pdf")
+    } else {
+        ("image", image_extension(prefix))
     };
     let suffix = u128::from_be_bytes(random()?);
     let path = folder.join(format!("SEAM {label}-{suffix:032x}.{extension}"));
     check_directory(folder)?;
-    stream.sock.check()?;
+    stream.check()?;
     staging
         .persist_noclobber(&path)
         .map_err(|error| error.error)?;
