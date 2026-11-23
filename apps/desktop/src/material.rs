@@ -84,25 +84,23 @@ pub(crate) fn pane(content: View) -> View {
 
 fn wordmark() -> View {
     let mark = canvas(|_| {
-        const WIDTH: f32 = 36.;
-        const TOP: f32 = 16. * 0.26;
-        const BOTTOM: f32 = 16. * 0.74;
+        let x = |source_x: f32| 18. + (source_x - 54.) * (2. / 3.);
         let mut path = Path::builder();
-        path.move_to(2., TOP)
-            .line_to(WIDTH * 0.42, TOP)
-            .line_to(WIDTH * 0.62, BOTTOM)
-            .line_to(WIDTH - 2., BOTTOM)
-            .move_to(2., BOTTOM)
-            .line_to(WIDTH * 0.36, BOTTOM)
-            .move_to(WIDTH * 0.68, TOP)
-            .line_to(WIDTH - 2., TOP);
+        path.move_to(x(30.), 4.)
+            .line_to(x(50.), 4.)
+            .line_to(x(60.), 12.)
+            .line_to(x(78.), 12.)
+            .move_to(x(30.), 12.)
+            .line_to(x(46.), 12.)
+            .move_to(x(64.), 4.)
+            .line_to(x(78.), 4.);
         let mut drawing = Canvas::new();
         if let Ok(path) = path.build() {
             drawing.stroke(
                 path,
                 PAPER,
                 Stroke {
-                    width: 1.75,
+                    width: 2.,
                     cap: LineCap::Round,
                     join: LineJoin::Round,
                     ..Stroke::default()
