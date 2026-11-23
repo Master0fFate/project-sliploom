@@ -9,9 +9,12 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
+use qrcode::{Color as QrColor, QrCode};
 use receiver_service::lan::ReceiveSession;
+use zgx::canvas::{Canvas, Path};
 use zgx::compose::prelude::*;
 use zgx::reactive::Signal;
+use zgx::scene::{Color, Rect};
 use zgx::semantics::Live;
 use zgx::theme::tok;
 use zgx_desktop::{Application, FileDialogOptions, WindowContext, WindowOptions};
@@ -74,18 +77,18 @@ impl Screen {
                         {
                             return;
                         }
-                        let mut incoming = false;
-                        match session.receive(&cancel, |_| {
-                            if !incoming {
-                                incoming = true;
+                        match session.receive_with_start(
+                            &cancel,
+                            || {
                                 let _ = tx.send(Event::Incoming);
-                            }
-                        }) {
+                            },
+                            |_| {},
+                        ) {
                             Ok(receipt) => {
                                 let status = if receipt.confirmed {
                                     "Saved"
                                 } else {
-                                    "Saved · unconfirmed"
+                                    "Saved here; phone may not have received confirmation"
                                 };
                                 format!(
                                     "{status} ({} bytes)\n{}",
@@ -168,6 +171,37 @@ fn likely_address() -> Option<Ipv4Addr> {
     }
 }
 
+fn invitation_qr(code: QrCode) -> View {
+    const QUIET_ZONE: usize = 4;
+    const MODULE: f32 = 6.;
+    let width = code.width();
+    let size = (width + 2 * QUIET_ZONE) as f32 * MODULE;
+    canvas(move |_| {
+        let mut drawing = Canvas::new();
+        drawing.fill(
+            Path::rectangle(Rect::new(0., 0., size, size)),
+            Color(255, 255, 255, 255),
+        );
+        for y in 0..width {
+            for x in 0..width {
+                if code[(x, y)] == QrColor::Dark {
+                    drawing.fill(
+                        Path::rectangle(Rect::new(
+                            (x + QUIET_ZONE) as f32 * MODULE,
+                            (y + QUIET_ZONE) as f32 * MODULE,
+                            MODULE,
+                            MODULE,
+                        )),
+                        Color(0, 0, 0, 255),
+                    );
+                }
+            }
+        }
+        drawing
+    })
+    .size(size, size)
+}
+
 fn receive_screen(cx: &mut WindowContext) {
     let runtime = &cx.ui.runtime;
     let screen = Screen {
@@ -221,90 +255,107 @@ fn receive_screen(cx: &mut WindowContext) {
     let folder = screen.folder.clone();
     let invitation = screen.invitation.clone();
     let invitation_visible = invitation.clone();
-    cx.render(
-        column()
-            .p(24.)
-            .gap(16.)
-            .bg(tok::SURFACE_BASE)
-            .child(text("Receive a file").heading(1).text_size(24.))
-            .child(
-                column().gap(6.).child(text("Private IPv4 address")).child(
-                    text_input("Private IPv4 address", screen.address)
-                        .placeholder("e.g. 192.168.1.20")
-                        .w(220.)
-                        .disabled_when(controls_disabled.clone()),
-                ),
-            )
-            .child(
-                column()
-                    .gap(6.)
-                    .items_start()
-                    .child(
-                        button()
-                            .child(text("Choose save folder"))
-                            .disabled_when(controls_disabled.clone())
-                            .on_click(pick_folder),
-                    )
-                    .child(
-                        text_signal(move || {
-                            folder.with(|folder| {
-                                folder.as_ref().map_or_else(
-                                    || "No folder selected".into(),
-                                    |path| path.display().to_string(),
-                                )
-                            })
+    let content = column()
+        .p(24.)
+        .gap(16.)
+        .child(text("Receive a file").heading(1).text_size(24.))
+        .child(
+            column().gap(6.).child(text("Private IPv4 address")).child(
+                text_input("Private IPv4 address", screen.address)
+                    .placeholder("e.g. 192.168.1.20")
+                    .w(220.)
+                    .disabled_when(controls_disabled.clone()),
+            ),
+        )
+        .child(
+            column()
+                .gap(6.)
+                .items_start()
+                .child(
+                    button()
+                        .child(text("Choose save folder"))
+                        .disabled_when(controls_disabled.clone())
+                        .on_click(pick_folder),
+                )
+                .child(
+                    text_signal(move || {
+                        folder.with(|folder| {
+                            folder.as_ref().map_or_else(
+                                || "No folder selected".into(),
+                                |path| path.display().to_string(),
+                            )
                         })
-                        .text_wrap(true),
-                    ),
-            )
-            .child(row().child(switch(
-                move || matches!(activity.get(), Activity::Receiving | Activity::Cancelling),
-                move |active, _| {
-                    let screen = actions.clone();
-                    let tasks = tasks.clone();
-                    if active {
-                        let activity = screen.activity.clone();
-                        button()
-                            .child(text("Cancel"))
-                            .disabled_when(move || activity.get() == Activity::Cancelling)
-                            .on_click(move || {
-                                screen.cancel.store(true, Ordering::Release);
-                                screen.activity.set(Activity::Cancelling);
-                                screen.invitation.set(String::new());
-                                screen.status.set("Cancelling…".into());
-                            })
-                    } else {
-                        button()
-                            .child(text("Receive once"))
-                            .bg(tok::ACCENT)
-                            .text_color(tok::ACCENT_TEXT)
-                            .disabled_when(controls_disabled.clone())
-                            .on_click(move || screen.start(&tasks))
-                    }
-                },
-            )))
-            .child(
-                text_signal(move || status.get())
-                    .text_wrap(true)
-                    .live(Live::Polite),
-            )
-            .child(switch(
-                move || !invitation_visible.with(String::is_empty),
-                move |visible, _| {
-                    if visible {
-                        let invitation = invitation.clone();
+                    })
+                    .text_wrap(true),
+                ),
+        )
+        .child(row().child(switch(
+            move || matches!(activity.get(), Activity::Receiving | Activity::Cancelling),
+            move |active, _| {
+                let screen = actions.clone();
+                let tasks = tasks.clone();
+                if active {
+                    let activity = screen.activity.clone();
+                    button()
+                        .child(text("Cancel"))
+                        .disabled_when(move || activity.get() == Activity::Cancelling)
+                        .on_click(move || {
+                            screen.cancel.store(true, Ordering::Release);
+                            screen.activity.set(Activity::Cancelling);
+                            screen.invitation.set(String::new());
+                            screen.status.set("Cancelling…".into());
+                        })
+                } else {
+                    button()
+                        .child(text("Receive once"))
+                        .bg(tok::ACCENT)
+                        .text_color(tok::ACCENT_TEXT)
+                        .disabled_when(controls_disabled.clone())
+                        .on_click(move || screen.start(&tasks))
+                }
+            },
+        )))
+        .child(
+            text_signal(move || status.get())
+                .text_wrap(true)
+                .live(Live::Polite),
+        )
+        .child(switch(
+            move || !invitation_visible.with(String::is_empty),
+            move |visible, _| {
+                if !visible {
+                    return div();
+                }
+                let qr = invitation.with(|value| QrCode::new(value.as_bytes()));
+                let scan = match qr {
+                    Ok(code) => column()
+                        .gap(8.)
+                        .child(text("Scan invitation").heading(2))
+                        .child(invitation_qr(code)),
+                    Err(_) => text("Couldn’t make a QR code. Enter the invitation manually."),
+                };
+                let invitation = invitation.clone();
+                column()
+                    .gap(8.)
+                    .child(scan)
+                    .child(text("Manual invitation"))
+                    .child(
                         text_signal(move || invitation.get())
                             .text_wrap(true)
                             .selectable(true)
                             .p(12.)
                             .bg(tok::INPUT_BG)
                             .border(1.)
-                            .border_color(tok::BORDER_STRONG)
-                    } else {
-                        div()
-                    }
-                },
-            )),
+                            .border_color(tok::BORDER_STRONG),
+                    )
+            },
+        ));
+    let offset = cx.ui.runtime.signal(0.);
+    cx.render(
+        scroll(offset)
+            .scrollbar(true)
+            .bg(tok::SURFACE_BASE)
+            .child(content),
     );
 }
 
@@ -313,7 +364,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .window(WindowOptions {
             title: "SEAM".into(),
             width: 560.,
-            height: 460.,
+            height: 660.,
             min_size: Some((440., 440.)),
             ..Default::default()
         })
