@@ -28,12 +28,12 @@ This option currently uses USB debugging already authorized for the Windows PC. 
 2. On Android, select one image or PDF in another app and choose **Share → SEAM**.
 3. In SEAM on Windows, choose **Accept** or **Decline**.
 
-Cable mode requires no QR code, invitation, or save-folder setup. SEAM sends no file content before **Accept**, never overwrites existing files, and does not automatically fall back to Wi-Fi.
+Cable mode requires no QR code, invitation, or save-folder setup. Accepted files go to `%LOCALAPPDATA%\SEAM`. SEAM sends no file content before **Accept**, never overwrites existing files, and does not automatically fall back to Wi-Fi.
 
 ## Optional: receive one file over Wi-Fi
 
-1. Put both devices on the same local Wi-Fi, where they can reach each other. On Windows, confirm the **Private IPv4 address** is the computer’s Wi-Fi address, click **Choose save folder**, and select a private folder you own and can write to. Click **Receive once**. These steps and tools do not change firewall rules. If local access is blocked, stop rather than bypassing network policy.
-2. On Android, use **Pick a file** or share one of your own non-sensitive PNGs or PDFs to **SEAM**. Tap **Scan invitation** and point the camera at the desktop QR. If scanning is unavailable or you decline camera access, enter the **Manual invitation** in Android’s **Invitation** field. **Do not post the QR or code in chat or logs.** Verify the displayed destination is your computer, then tap **Send**. Selecting a file or scanning does not send it.
+1. Put both devices on the same local Wi-Fi, where they can reach each other. On Windows, choose **Use Wi-Fi instead**, confirm the **Private IPv4 address**, and select a private save folder you own. Click **Receive once**. SEAM does not change firewall rules.
+2. On Android, share one image or PDF to **SEAM**. When cable is unavailable, choose **Use Wi-Fi**, then tap **Scan invitation** and point the camera at the desktop QR. If scanning is unavailable or you decline camera access, enter the **Manual invitation** in Android’s **Invitation** field. **Do not post the QR or code in chat or logs.** Verify the displayed destination is your computer, then tap **Send**. Selecting a file or scanning does not send it.
 3. **Saved on computer** means Android received a matching authenticated save receipt, not just that it sent the bytes. If the save is unconfirmed, check the chosen folder first; do not auto-retry. To try the other file type, start a new **Receive once** session.
 
 Android gets access to the selected file through the picker or Sharesheet, not broad storage access. Camera permission is only for scanning; Android’s network permission is used for the direct local connection. The one-time invitation pins the receiver for that session: no system-wide trust changes, account, or cloud service.

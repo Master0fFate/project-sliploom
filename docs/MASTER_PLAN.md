@@ -892,7 +892,9 @@ Android app
 
 ## 10. USB and wired transfer: separate research track
 
-**Product intent:** A cable should feel as simple as a network transfer. **Engineering reality:** Android MTP, USB tethering, ADB, and USB accessory modes are different mechanisms with different OS support and permission requirements.
+**Wired experience:** With the desktop app open and the cable connected, choose **Share → SEAM** on Android. The desktop asks **Accept** or **Decline**. No QR code, invitation, or extra send screen. Wi-Fi is a separate choice, not an automatic fallback.
+
+The Windows debug build implements this flow over an already-authorized USB debugging connection. On a Pixel 9 Pro XL (API 37), QA verified that Decline saved nothing and Accept saved the 596-byte PDF with matching SHA-256 (`03522f0`). This is not consumer USB support. Android MTP, USB tethering, ADB, and USB accessory modes have different platform and permission requirements.
 
 ### Candidate evaluation
 
