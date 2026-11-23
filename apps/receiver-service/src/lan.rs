@@ -22,6 +22,7 @@ use time::OffsetDateTime;
 use crate::{MAX_BYTES, Result, check_length, invalid};
 
 pub mod cable;
+mod filename;
 
 const INVITATION_LIFETIME: Duration = Duration::from_secs(120);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -30,6 +31,8 @@ const TRANSFER_TIMEOUT: Duration = Duration::from_secs(300);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_ATTEMPTS: usize = 8;
 const MAX_CHUNK: usize = 65_536;
+const MAX_NAME_BYTES: usize = 180;
+const MAX_PUBLISH_ATTEMPTS: usize = 1_000;
 const VERSION: [u8; 5] = *b"SEAM\x02";
 const ACCEPT: [u8; 5] = [0x02, 0, 0, 0, 0];
 
@@ -355,12 +358,26 @@ fn receive_file(
 
     check_directory(folder)?;
     let mut staging = NamedTempFile::new_in(folder)?;
+    let mut frame = frame_header(stream)?;
+    let mut name_bytes = [0; MAX_NAME_BYTES];
+    let name = if let (0x08, count) = frame {
+        if !(1..=MAX_NAME_BYTES as u32).contains(&count) {
+            return Err(invalid("invalid NAME frame length").into());
+        }
+        let payload = &mut name_bytes[..count as usize];
+        stream.read_exact(payload)?;
+        let name = str::from_utf8(payload).map_err(|_| invalid("invalid NAME frame encoding"))?;
+        frame = frame_header(stream)?;
+        Some(name)
+    } else {
+        None
+    };
     let mut chunk = [0; MAX_CHUNK];
     let mut prefix = [0; 12];
     let mut bytes = 0_u64;
     let mut digest = Sha256::new();
     let end = loop {
-        match frame_header(stream)? {
+        match frame {
             (0x04, count) if count != 0 && count <= MAX_CHUNK as u32 => {
                 let total = bytes + u64::from(count);
                 if total > limit {
@@ -392,23 +409,14 @@ fn receive_file(
             }
             _ => return Err(invalid("unexpected transfer frame").into()),
         }
+        frame = frame_header(stream)?;
     };
 
     stream.check()?;
     staging.as_file().sync_all()?;
     let prefix = &prefix[..bytes.min(prefix.len() as u64) as usize];
-    let (label, extension) = if offer.is_pdf {
-        ("document", "pdf")
-    } else {
-        ("image", image_extension(prefix))
-    };
-    let suffix = u128::from_be_bytes(random()?);
-    let path = folder.join(format!("SEAM {label}-{suffix:032x}.{extension}"));
-    check_directory(folder)?;
-    stream.check()?;
-    staging
-        .persist_noclobber(&path)
-        .map_err(|error| error.error)?;
+    let (stem, extension) = filename::parts(name, offer.is_pdf, prefix);
+    let path = publish_file(stream, folder, staging, stem, extension)?;
 
     let mut committed = [0; 45];
     committed[..5].copy_from_slice(&[0x06, 0, 0, 0, 40]);
@@ -424,12 +432,31 @@ fn receive_file(
     })
 }
 
-fn image_extension(prefix: &[u8]) -> &'static str {
-    match prefix {
-        [0x89, b'P', b'N', b'G', 13, 10, 26, 10, ..] => "png",
-        [0xff, 0xd8, 0xff, ..] => "jpg",
-        [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..] => "gif",
-        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P'] => "webp",
-        _ => "bin",
+fn publish_file(
+    stream: &impl CheckedStream,
+    folder: &Path,
+    mut staging: NamedTempFile,
+    stem: &str,
+    extension: &str,
+) -> io::Result<PathBuf> {
+    for attempt in 1..=MAX_PUBLISH_ATTEMPTS {
+        let path = if attempt == 1 {
+            folder.join(format!("{stem}.{extension}"))
+        } else {
+            folder.join(format!("{stem} ({attempt}).{extension}"))
+        };
+        check_directory(folder)?;
+        stream.check()?;
+        match staging.persist_noclobber(&path) {
+            Ok(_) => return Ok(path),
+            Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
+                staging = error.file;
+            }
+            Err(error) => return Err(error.error),
+        }
     }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "receive filename attempts exhausted",
+    ))
 }
