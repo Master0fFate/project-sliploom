@@ -46,6 +46,8 @@ pub(crate) fn native_glass() -> Option<Glass> {
 pub(crate) fn backdrop(cx: &WindowContext, native_glass: bool) -> View {
     let theme = cx.ui.theme().clone();
     column()
+        .w_full()
+        .h_full()
         .font_family(if cfg!(windows) {
             "Segoe UI"
         } else {

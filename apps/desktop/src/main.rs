@@ -401,7 +401,9 @@ fn receive_screen(
             pane(view)
         },
     )
-    .display_contents();
+    .w_full()
+    .items_center()
+    .shrink_0();
     let viewport = cx.viewport.clone();
     let mode_switch = mode_action(text_signal(move || {
         if wifi.get() {
@@ -427,16 +429,23 @@ fn receive_screen(
     });
     cx.render(
         backdrop(cx, glass).child(
-            scroll(offset).grow().min_h(0.).scrollbar(true).child(
-                column()
-                    .p(24.)
-                    .gap(8.)
-                    .items_center()
-                    .justify_center()
-                    .reactive_style(move || Styles::new().min_h(viewport.get().1))
-                    .child(content)
-                    .child(mode_switch),
-            ),
+            scroll(offset)
+                .w_full()
+                .grow()
+                .min_h(0.)
+                .scrollbar(true)
+                .child(
+                    column()
+                        .w_full()
+                        .shrink_0()
+                        .p(24.)
+                        .gap(8.)
+                        .items_center()
+                        .justify_center()
+                        .reactive_style(move || Styles::new().min_h(viewport.get().1))
+                        .child(content)
+                        .child(mode_switch),
+                ),
         ),
     );
 }
