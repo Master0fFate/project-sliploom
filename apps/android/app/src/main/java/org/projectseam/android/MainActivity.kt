@@ -546,7 +546,7 @@ private class IntakeState : ViewModel() {
         reset(true)
         when {
             uri.scheme != ContentResolver.SCHEME_CONTENT || uri.authority.isNullOrBlank() -> status = Status.Unsupported
-            FileOperations.busy -> status = Status.Busy
+            FileOperations.busy && !viaCable -> status = Status.Busy
             else -> {
                 source = Source(uri, type)
                 cableMode = viaCable
@@ -620,7 +620,7 @@ private sealed class Status(val message: Int) {
     val canCancel: Boolean get() = this == WaitingForComputer || this == Reading || this == Sending
     val working: Boolean get() = canCancel || this == Cancelling || this == TimingOut
     val canRetryCable: Boolean
-        get() = this == CableUnavailable || this == SendTimedOut || this == SendCancelled ||
+        get() = this == Busy || this == CableUnavailable || this == SendTimedOut || this == SendCancelled ||
             this == SendFailed || this == Declined
     val unconfirmed: Boolean get() = this == Unconfirmed || this == UnconfirmedAfterCancel || this == UnconfirmedAfterTimeout
 
