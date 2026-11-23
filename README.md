@@ -1,6 +1,6 @@
 # SEAM
 
-SEAM is a local-first Android-to-desktop file transfer project. **Not released.** At `43ea485`, the debug apps let you opt in to receiving one file on Windows using a QR invitation or a manual code. See [what was verified and what remains open](docs/TESTING/LAN_PROOF.md).
+SEAM is a local-first Android-to-desktop file transfer project. **Not released.** USB cable is the primary development flow; local Wi-Fi is optional.
 
 ## Build the debug apps on Windows
 
@@ -20,7 +20,17 @@ Set-Location apps/android
 
 Install the debug APK at `apps/android/app/build/outputs/apk/debug/app-debug.apk` on your own Android device.
 
-## Receive one file
+## Receive one file over USB (development)
+
+This option currently uses USB debugging already authorized for the Windows PC. Ordinary plug-in USB with debugging off is not yet supported.
+
+1. With Android Platform Tools installed on the PC, connect Android using an already-authorized USB data connection and open SEAM on Windows.
+2. On Android, select one image or PDF in another app and choose **Share → SEAM**.
+3. In SEAM on Windows, choose **Accept** or **Decline**.
+
+Cable mode requires no QR code, invitation, or save-folder setup. SEAM sends no file content before **Accept**, never overwrites existing files, and does not automatically fall back to Wi-Fi.
+
+## Optional: receive one file over Wi-Fi
 
 1. Put both devices on the same local Wi-Fi, where they can reach each other. On Windows, confirm the **Private IPv4 address** is the computer’s Wi-Fi address, click **Choose save folder**, and select a private folder you own and can write to. Click **Receive once**. These steps and tools do not change firewall rules. If local access is blocked, stop rather than bypassing network policy.
 2. On Android, use **Pick a file** or share one of your own non-sensitive PNGs or PDFs to **SEAM**. Tap **Scan invitation** and point the camera at the desktop QR. If scanning is unavailable or you decline camera access, enter the **Manual invitation** in Android’s **Invitation** field. **Do not post the QR or code in chat or logs.** Verify the displayed destination is your computer, then tap **Send**. Selecting a file or scanning does not send it.
