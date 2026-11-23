@@ -9,8 +9,10 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.security.MessageDigest
+import java.security.NoSuchAlgorithmException
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import javax.net.ssl.SSLContext
@@ -25,7 +27,7 @@ internal class LanInvite private constructor(
     private val host = checkNotNull(endpoint.address.hostAddress)
     val address: String = "$host:${endpoint.port}"
 
-    internal fun tlsFactory() = SSLContext.getInstance(TLS_VERSION).apply {
+    internal fun tlsFactory() = tlsContext().apply {
         init(emptyArray(), arrayOf(object : X509TrustManager {
             override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
                 val leaf = chain.firstOrNull() ?: throw CertificateException()
@@ -49,6 +51,7 @@ internal class LanInvite private constructor(
 
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
         }), null)
+        if (TLS_VERSION !in supportedSSLParameters.protocols) throw TlsUnavailableException()
     }.socketFactory
 
     internal fun writeAuth(output: OutputStream) {
@@ -98,23 +101,23 @@ internal sealed interface LanResult {
     data object Unconfirmed : LanResult
     data object TooLarge : LanResult
     data object Failed : LanResult
-    data object Cancelled : LanResult
+    data object TlsUnavailable : LanResult
+    data class Stopped(val reason: LanStop, val afterEnd: Boolean) : LanResult
 }
 
-internal class LanTransfer(private val invite: LanInvite) {
+internal enum class LanStop { Cancelled, TimedOut }
+
+internal class LanTransfer(private val invite: LanInvite, private val onStop: (LanStop) -> Unit) {
     private val lock = Object()
     private var started = false
     private var finished = false
-    private var cancelled = false
+    private var stopReason: LanStop? = null
     private var endStarted = false
     private var totalDeadline = 0L
     private var phaseDeadline = 0L
 
-    fun cancel() {
-        synchronized(lock) {
-            cancelled = true
-            lock.notifyAll()
-        }
+    fun cancel() = synchronized(lock) {
+        stopLocked(if (totalDeadline != 0L && remainingMs() <= 0) LanStop.TimedOut else LanStop.Cancelled)
     }
 
     fun send(
@@ -126,18 +129,19 @@ internal class LanTransfer(private val invite: LanInvite) {
         synchronized(lock) {
             if (started) return LanResult.Failed
             started = true
-            if (cancelled) return LanResult.Cancelled
-            if (declaredLength > MAX_BYTES) return LanResult.TooLarge
-            if (declaredLength < -1) return LanResult.Failed
+            stopReason?.let { return LanResult.Stopped(it, afterEnd = false) }
             val now = SystemClock.elapsedRealtime()
             totalDeadline = now + TOTAL_MS
             phaseDeadline = now + AUTH_MS
         }
         var raw: Socket? = null
         var tls: SSLSocket? = null
-        return try {
+        var watchdog: Thread? = null
+        try {
+            if (declaredLength > LAN_MAX_BYTES) return complete(LanResult.TooLarge)
+            if (declaredLength < -1) return complete(LanResult.Failed)
             val socket = Socket(Proxy.NO_PROXY).also { raw = it }
-            Thread({ watch(socket) }, "SEAM transfer timeout").apply {
+            watchdog = Thread({ watch(socket) }, "SEAM transfer timeout").apply {
                 isDaemon = true
                 start()
             }
@@ -149,6 +153,7 @@ internal class LanTransfer(private val invite: LanInvite) {
                 socket, invite.endpoint.address.hostAddress, invite.endpoint.port, true,
             ) as SSLSocket).also { tls = it }
             secure.useClientMode = true
+            if (TLS_VERSION !in secure.supportedProtocols) throw TlsUnavailableException()
             secure.enabledProtocols = arrayOf(TLS_VERSION)
             secure.soTimeout = AUTH_MS.toInt()
             secure.startHandshake()
@@ -162,9 +167,13 @@ internal class LanTransfer(private val invite: LanInvite) {
             requireHeader(header, 0x02, 0)
             progress()
             secure.soTimeout = IDLE_MS.toInt()
-            transfer(input, declaredLength, isPdf, onProgress, output, response, header)
+            return complete(transfer(input, declaredLength, isPdf, onProgress, output, response, header))
+        } catch (_: SocketTimeoutException) {
+            return complete(LanResult.Failed, socketTimedOut = true)
+        } catch (_: TlsUnavailableException) {
+            return complete(LanResult.TlsUnavailable)
         } catch (_: Exception) {
-            stopped()
+            return complete(LanResult.Failed)
         } finally {
             synchronized(lock) {
                 finished = true
@@ -172,6 +181,7 @@ internal class LanTransfer(private val invite: LanInvite) {
             }
             closeQuietly(raw)
             closeQuietly(tls)
+            watchdog?.join()
         }
     }
 
@@ -193,13 +203,14 @@ internal class LanTransfer(private val invite: LanInvite) {
         val hash = sha256()
         val packet = ByteBuffer.allocate(HEADER_BYTES + CHUNK_BYTES)
         val data = packet.array()
-        val limit = if (declaredLength == -1L) MAX_BYTES else declaredLength
+        val limit = if (declaredLength == -1L) LAN_MAX_BYTES else declaredLength
         var sent = 0L
         while (true) {
             checkActive()
             val requested = minOf(CHUNK_BYTES.toLong(), limit - sent + 1).toInt()
             var read = input.read(data, HEADER_BYTES, requested)
             if (read == 0) {
+                checkActive()
                 val byte = input.read()
                 read = if (byte == -1) -1 else {
                     data[HEADER_BYTES] = byte.toByte()
@@ -210,8 +221,8 @@ internal class LanTransfer(private val invite: LanInvite) {
             if (read == -1) break
             if (read !in 1..requested) throw IOException()
             val next = sent + read
-            if (next > MAX_BYTES) return stopped(LanResult.TooLarge)
-            if (next > limit) return stopped()
+            if (next > LAN_MAX_BYTES) return LanResult.TooLarge
+            if (next > limit) return LanResult.Failed
             packet.put(0, 0x04).putInt(1, read)
             hash.update(data, HEADER_BYTES, read)
             writePacket(output, data, HEADER_BYTES + read)
@@ -219,7 +230,7 @@ internal class LanTransfer(private val invite: LanInvite) {
             progress()
             onProgress(sent)
         }
-        if (declaredLength != -1L && sent != declaredLength) return stopped()
+        if (declaredLength != -1L && sent != declaredLength) return LanResult.Failed
         val receipt = ByteBuffer.allocate(RECEIPT_BYTES).putLong(sent).put(hash.digest()).array()
         val end = ByteBuffer.allocate(HEADER_BYTES + RECEIPT_BYTES)
             .put(0x05).putInt(RECEIPT_BYTES).put(receipt).array()
@@ -248,20 +259,34 @@ internal class LanTransfer(private val invite: LanInvite) {
         }
     }
 
-    private fun stopped(beforeEnd: LanResult = LanResult.Failed): LanResult = synchronized(lock) {
+    private fun complete(result: LanResult, socketTimedOut: Boolean = false): LanResult = synchronized(lock) {
+        if (result !is LanResult.Saved && (socketTimedOut || remainingMs() <= 0)) {
+            stopLocked(LanStop.TimedOut)
+        }
+        finished = true
+        lock.notifyAll()
         when {
+            result is LanResult.Saved -> result
+            stopReason != null -> LanResult.Stopped(checkNotNull(stopReason), endStarted)
             endStarted -> LanResult.Unconfirmed
-            cancelled -> LanResult.Cancelled
-            else -> beforeEnd
+            else -> result
         }
     }
+
+    private fun stopLocked(reason: LanStop) {
+        if (finished || stopReason != null) return
+        stopReason = reason
+        lock.notifyAll()
+        onStop(reason)
+    }
+
+    private fun remainingMs() = minOf(totalDeadline, phaseDeadline) - SystemClock.elapsedRealtime()
 
     private fun checkActive() = synchronized(lock) { checkActiveLocked() }
 
     private fun checkActiveLocked() {
-        if (cancelled || SystemClock.elapsedRealtime() >= minOf(totalDeadline, phaseDeadline)) {
-            throw IOException()
-        }
+        if (remainingMs() <= 0) stopLocked(LanStop.TimedOut)
+        if (stopReason != null) throw IOException()
     }
 
     private fun progress() {
@@ -274,9 +299,12 @@ internal class LanTransfer(private val invite: LanInvite) {
 
     private fun watch(socket: Socket) {
         synchronized(lock) {
-            while (!finished && !cancelled) {
-                val remaining = minOf(totalDeadline, phaseDeadline) - SystemClock.elapsedRealtime()
-                if (remaining <= 0) break
+            while (!finished && stopReason == null) {
+                val remaining = remainingMs()
+                if (remaining <= 0) {
+                    stopLocked(LanStop.TimedOut)
+                    break
+                }
                 lock.wait(remaining)
             }
             if (finished) return
@@ -289,10 +317,18 @@ private const val TLS_VERSION = "TLSv1.3"
 private const val AUTH_MS = 5_000L
 private const val IDLE_MS = 10_000L
 private const val TOTAL_MS = 300_000L
-private const val MAX_BYTES = 67_108_864L
+internal const val LAN_MAX_BYTES = 64L * 1024 * 1024
 private const val CHUNK_BYTES = 65_536
 private const val HEADER_BYTES = 5
 private const val RECEIPT_BYTES = 40
+
+private class TlsUnavailableException : IOException()
+
+private fun tlsContext() = try {
+    SSLContext.getInstance(TLS_VERSION)
+} catch (_: NoSuchAlgorithmException) {
+    throw TlsUnavailableException()
+}
 
 private fun sha256(): MessageDigest = MessageDigest.getInstance("SHA-256")
 

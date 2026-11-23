@@ -77,26 +77,17 @@ class MainActivity : ComponentActivity() {
     private val intake by viewModels<IntakeState> { viewModelFactory { initializer { IntakeState() } } }
     private var pendingIntent: Intent? = null
     private var foreground = false
-    private var invitation by mutableStateOf("")
-    private var parsedInvite by mutableStateOf<LanInvite?>(null)
-    private var scanMessage by mutableStateOf<Int?>(null)
     private val scanner = registerForActivityResult(ScanContract()) { result ->
         if (intake.finishScan() && pendingIntent == null && !intake.status.working) {
-            val contents = result.contents
-            editInvitation("")
-            parsedInvite = contents?.let(LanInvite::parse)
-            scanMessage = when {
-                parsedInvite != null -> null
-                contents != null -> R.string.scan_invalid
-                result.originalIntent?.getBooleanExtra(Intents.Scan.MISSING_CAMERA_PERMISSION, false) == true ->
-                    R.string.scan_unavailable
-                else -> R.string.scan_no_result
-            }
+            intake.acceptScan(
+                result.contents,
+                result.originalIntent?.getBooleanExtra(Intents.Scan.MISSING_CAMERA_PERMISSION, false) == true,
+            )
         }
     }
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            editInvitation("")
+            intake.editInvitation("")
             if (!intake.cancel()) intake.select(uri, null)
         }
     }
@@ -105,12 +96,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) {
             pendingIntent = intent
-        } else if (!intake.hasShareSession) {
-            val savePossible = savedInstanceState.getBoolean(SAVE_POSSIBLE)
-            if (savePossible || savedInstanceState.getBoolean(SHARE_SESSION)) {
-                intake.hasShareSession = true
-                intake.status = if (savePossible) Status.Unconfirmed else Status.Retry
-            }
+        } else {
+            intake.restore(savedInstanceState)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             window.decorView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
@@ -124,22 +111,22 @@ class MainActivity : ComponentActivity() {
                 status = status,
                 sentBytes = intake.sentBytes,
                 hasSource = intake.hasSource,
-                invitation = invitation,
-                address = parsedInvite?.address,
-                scanMessage = scanMessage,
+                invitation = intake.invitation,
+                address = intake.parsedInvite?.address,
+                scanMessage = intake.scanMessage,
                 onScan = ::scanInvitation,
                 onInvitationChanged = { value ->
-                    if (foreground && intake.hasSource && !intake.status.working) editInvitation(value)
+                    if (foreground && intake.hasSource && !intake.status.working) intake.editInvitation(value)
                 },
                 onSend = {
-                    if (foreground) parsedInvite?.let { invite ->
-                        editInvitation("")
+                    if (foreground && supportsLanSend) intake.parsedInvite?.let { invite ->
+                        intake.editInvitation("")
                         intake.start(applicationContext, invite)
                     }
                 },
                 onCheck = {
                     if (foreground) {
-                        editInvitation("")
+                        intake.editInvitation("")
                         intake.start(applicationContext, null)
                     }
                 },
@@ -169,7 +156,7 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(SHARE_SESSION, pendingIntent?.isShare ?: intake.hasShareSession)
-        outState.putBoolean(SAVE_POSSIBLE, intake.savePossible)
+        outState.putString(TRANSFER_SNAPSHOT, intake.transferSnapshot?.name)
     }
 
     override fun onResume() {
@@ -179,24 +166,25 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         foreground = false
-        editInvitation("")
         super.onPause()
     }
 
     override fun onStop() {
-        editInvitation("")
-        intake.cancel()
+        if (!isChangingConfigurations) {
+            intake.editInvitation("")
+            intake.cancel()
+        }
         super.onStop()
     }
 
     private fun scanInvitation() {
-        if (!foreground || !intake.hasSource || intake.status.working) return
+        if (!foreground || !supportsLanSend || !intake.hasSource || intake.status.working) return
         if (!packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) {
-            scanMessage = R.string.scan_unavailable
+            intake.scanMessage = R.string.scan_unavailable
             return
         }
         if (!intake.beginScan()) return
-        editInvitation("")
+        intake.editInvitation("")
         val options = ScanOptions()
             .setCaptureActivity(InvitationCaptureActivity::class.java)
             .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
@@ -209,21 +197,15 @@ class MainActivity : ComponentActivity() {
             scanner.launch(options)
         } catch (_: ActivityNotFoundException) {
             intake.finishScan()
-            scanMessage = R.string.scan_unavailable
+            intake.scanMessage = R.string.scan_unavailable
         } catch (_: SecurityException) {
             intake.finishScan()
-            scanMessage = R.string.scan_unavailable
+            intake.scanMessage = R.string.scan_unavailable
         }
     }
 
-    private fun editInvitation(value: String) {
-        scanMessage = null
-        invitation = value
-        parsedInvite = if (value.isEmpty()) null else LanInvite.parse(value)
-    }
-
     private fun receive(intent: Intent) {
-        editInvitation("")
+        intake.editInvitation("")
         if (intake.cancel()) return
         intake.reset(intent.isShare)
         val type = intent.type.orEmpty()
@@ -254,8 +236,11 @@ class InvitationCaptureActivity : CaptureActivity() {
 }
 
 private const val SHARE_SESSION = "share_session"
-private const val SAVE_POSSIBLE = "save_possible"
-private const val MAX_BYTES = 100L * 1024 * 1024
+private const val TRANSFER_SNAPSHOT = "transfer_snapshot"
+private const val CHECK_MAX_BYTES = 100L * 1024 * 1024
+private val supportsLanSend: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+
+private enum class TransferSnapshot { Saved, Unconfirmed, InFlight }
 
 private fun String.isSupported() = this == "application/pdf" || startsWith("image/") && length > 6
 
@@ -290,10 +275,11 @@ private object FileOperations {
         source: Source,
         invite: LanInvite?,
         onProgress: (Long) -> Unit,
+        onStopping: (Status) -> Unit,
         onFinished: (Status, Long?) -> Unit,
     ): Operation? {
         if (busy) return null
-        val operation = Operation(invite)
+        val operation = Operation(invite, scope, onStopping)
         active = operation
         scope.launch {
             val progress = if (operation.sending) launch {
@@ -314,33 +300,37 @@ private object FileOperations {
         }
         return operation
     }
-
-    fun cancel(operation: Operation) {
-        operation.cancel(scope)
-    }
 }
 
-private class Operation(invite: LanInvite?) {
-    private val transfer = invite?.let(::LanTransfer)
-    val sending: Boolean get() = transfer != null
-    val sentBytes = AtomicLong()
+private class Operation(
+    invite: LanInvite?,
+    private val scope: CoroutineScope,
+    private val onStopping: (Status) -> Unit,
+) {
     private val lock = Any()
     private val signal = CancellationSignal()
     private var resource: Closeable? = null
-    private var cancelled = false
-    var cancellation: Job? = null
-        private set
+    private var stopReason: LanStop? = null
+    private var cleanupJob: Job? = null
+    private val transfer = invite?.let { LanTransfer(it, ::requestStop) }
+    val sending: Boolean get() = transfer != null
+    val sentBytes = AtomicLong()
+    val cancellation: Job? get() = synchronized(lock) { cleanupJob }
 
-    fun cancel(scope: CoroutineScope) {
-        if (cancellation != null) return
-        val toClose = synchronized(lock) {
-            cancelled = true
-            takeResource()
-        }
-        cancellation = scope.launch {
-            launch(Dispatchers.IO) { cleanup { signal.cancel() } }
-            launch(Dispatchers.IO) { cleanup { toClose?.close() } }
-            if (transfer != null) launch(Dispatchers.IO) { cleanup { transfer.cancel() } }
+    fun cancel() {
+        if (transfer != null) transfer.cancel() else requestStop(LanStop.Cancelled)
+    }
+
+    private fun requestStop(reason: LanStop) {
+        synchronized(lock) {
+            if (stopReason != null) return
+            stopReason = reason
+            val toClose = takeResource()
+            cleanupJob = scope.launch {
+                onStopping(if (reason == LanStop.TimedOut) Status.TimingOut else Status.Cancelling)
+                launch(Dispatchers.IO) { cleanup { signal.cancel() } }
+                launch(Dispatchers.IO) { cleanup { toClose?.close() } }
+            }
         }
     }
 
@@ -353,18 +343,22 @@ private class Operation(invite: LanInvite?) {
     }
 
     private fun sourceFailure(): Status = when {
-        synchronized(lock) { cancelled } -> cancelledStatus()
+        synchronized(lock) { stopReason != null } -> stoppedBeforeTransfer()
         sending -> Status.SendFailed
         else -> Status.Unreadable
     }
 
-    private fun cancelledStatus() = if (sending) Status.SendCancelled else Status.Cancelled
+    private fun stoppedBeforeTransfer() = when (synchronized(lock) { stopReason }) {
+        LanStop.TimedOut -> Status.SendTimedOut
+        else -> if (sending) Status.SendCancelled else Status.Cancelled
+    }
 
     private fun openAndRun(context: Context, source: Source): Status {
         checkActive()
         val uri = source.uri
         val grant = context.checkUriPermission(uri, Process.myPid(), Process.myUid(), Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        if (grant != PackageManager.PERMISSION_GRANTED) return sourceFailure()
+        checkActive()
+        if (grant != PackageManager.PERMISSION_GRANTED) return Status.GrantLost
         val resolver = context.contentResolver
         val type = source.type ?: resolver.getType(uri)
         if (type == null || !type.isSupported()) return Status.Unsupported
@@ -374,10 +368,11 @@ private class Operation(invite: LanInvite?) {
         try {
             checkActive()
             val length = descriptor.declaredLength
-            if (!sending && length > MAX_BYTES) return Status.TooLarge
+            if (sending && length > LAN_MAX_BYTES) return Status.SendTooLarge
+            if (!sending && length > CHECK_MAX_BYTES) return Status.CheckTooLarge
             val input = descriptor.createInputStream()
             localResource = input
-            if (!register(input)) return cancelledStatus()
+            if (!register(input)) return stoppedBeforeTransfer()
             localResource = null
             checkActive()
             val network = transfer ?: return checkFile(input)
@@ -388,19 +383,21 @@ private class Operation(invite: LanInvite?) {
         }
     }
 
-    private fun send(network: LanTransfer, input: InputStream, length: Long, isPdf: Boolean): Status = try {
+    private fun send(network: LanTransfer, input: InputStream, length: Long, isPdf: Boolean): Status =
         when (val result = network.send(input, length, isPdf) { sentBytes.set(it) }) {
-            is LanResult.Saved -> Status.Saved(result.bytes)
+            is LanResult.Saved -> {
+                sentBytes.set(result.bytes)
+                Status.Saved
+            }
             LanResult.Unconfirmed -> Status.Unconfirmed
-            LanResult.TooLarge -> Status.TooLarge
+            LanResult.TooLarge -> Status.SendTooLarge
             LanResult.Failed -> Status.SendFailed
-            LanResult.Cancelled -> Status.SendCancelled
+            LanResult.TlsUnavailable -> Status.TlsUnavailable
+            is LanResult.Stopped -> when (result.reason) {
+                LanStop.Cancelled -> if (result.afterEnd) Status.UnconfirmedAfterCancel else Status.SendCancelled
+                LanStop.TimedOut -> if (result.afterEnd) Status.UnconfirmedAfterTimeout else Status.SendTimedOut
+            }
         }
-    } catch (_: IOException) {
-        Status.Unconfirmed
-    } catch (_: RuntimeException) {
-        Status.Unconfirmed
-    }
 
     private fun checkFile(input: InputStream): Status {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -408,12 +405,12 @@ private class Operation(invite: LanInvite?) {
         var total = 0L
         while (true) {
             checkActive()
-            val size = input.read(buffer, 0, minOf(buffer.size.toLong(), MAX_BYTES - total + 1).toInt())
+            val size = input.read(buffer, 0, minOf(buffer.size.toLong(), CHECK_MAX_BYTES - total + 1).toInt())
             checkActive()
             if (size == -1) return Status.Read(total, digest.digest().toHexString())
             if (size == 0) return Status.Unreadable
             total += size
-            if (total > MAX_BYTES) return Status.TooLarge
+            if (total > CHECK_MAX_BYTES) return Status.CheckTooLarge
             digest.update(buffer, 0, size)
         }
     }
@@ -427,11 +424,11 @@ private class Operation(invite: LanInvite?) {
     }
 
     private fun checkActive() {
-        if (synchronized(lock) { cancelled }) throw OperationCanceledException()
+        if (synchronized(lock) { stopReason != null }) throw OperationCanceledException()
     }
 
     private fun register(opened: Closeable): Boolean = synchronized(lock) {
-        if (cancelled) return false
+        if (stopReason != null) return false
         resource = opened
         true
     }
@@ -448,8 +445,47 @@ private class IntakeState : ViewModel() {
     private var scanSource: Source? = null
     private var operation: Operation? = null
     val hasSource: Boolean get() = source != null
-    val savePossible: Boolean
-        get() = operation?.sending == true || status == Status.Unconfirmed || status is Status.Saved
+    var invitation by mutableStateOf("")
+        private set
+    var parsedInvite by mutableStateOf<LanInvite?>(null)
+        private set
+    var scanMessage by mutableStateOf<Int?>(null)
+    val transferSnapshot: TransferSnapshot?
+        get() = when {
+            operation?.sending == true || status == Status.Interrupted -> TransferSnapshot.InFlight
+            status == Status.Saved -> TransferSnapshot.Saved
+            status.unconfirmed -> TransferSnapshot.Unconfirmed
+            else -> null
+        }
+
+    fun restore(state: Bundle) {
+        if (hasShareSession) return
+        val restored = when (state.getString(TRANSFER_SNAPSHOT)) {
+            TransferSnapshot.Saved.name -> Status.Saved
+            TransferSnapshot.Unconfirmed.name -> Status.Unconfirmed
+            TransferSnapshot.InFlight.name -> Status.Interrupted
+            else -> if (state.getBoolean(SHARE_SESSION)) Status.Retry else return
+        }
+        hasShareSession = true
+        status = restored
+    }
+
+    fun editInvitation(value: String) {
+        scanMessage = null
+        invitation = value
+        parsedInvite = if (value.isEmpty()) null else LanInvite.parse(value)
+    }
+
+    fun acceptScan(contents: String?, missingPermission: Boolean) {
+        editInvitation("")
+        parsedInvite = contents?.let(LanInvite::parse)
+        scanMessage = when {
+            parsedInvite != null -> null
+            contents != null -> R.string.scan_invalid
+            missingPermission -> R.string.scan_unavailable
+            else -> R.string.scan_no_result
+        }
+    }
 
     fun reset(shareSession: Boolean) {
         hasShareSession = shareSession
@@ -485,50 +521,63 @@ private class IntakeState : ViewModel() {
     fun start(context: Context, invite: LanInvite?) {
         val selected = source ?: return
         if (operation != null) return
-        val attempt = FileOperations.start(context, selected, invite, { count -> sentBytes = count }) { result, count ->
+        val attempt = FileOperations.start(
+            context, selected, invite, onProgress = { sentBytes = it }, onStopping = { status = it },
+        ) { result, count ->
             operation = null
-            if (result == Status.Unsupported) source = null
-            sentBytes = (result as? Status.Saved)?.bytes ?: count
+            if (result == Status.Unsupported || result == Status.GrantLost || result == Status.Saved || result.unconfirmed) {
+                source = null
+            }
+            sentBytes = count
             status = result
         }
         operation = attempt
         if (attempt == null) {
             status = Status.Busy
-        } else if (attempt.sending) {
-            source = null
-            sentBytes = 0L
-            status = Status.Sending
         } else {
-            status = Status.Reading
+            sentBytes = if (attempt.sending) 0L else null
+            status = if (attempt.sending) Status.Sending else Status.Reading
         }
     }
 
     fun cancel(): Boolean {
         val active = operation ?: return false
-        status = Status.Cancelling
-        FileOperations.cancel(active)
+        active.cancel()
         return true
+    }
+
+    override fun onCleared() {
+        cancel()
     }
 }
 
 private sealed class Status(val message: Int) {
-    val working: Boolean get() = this == Reading || this == Sending || this == Cancelling
+    val working: Boolean get() = this == Reading || this == Sending || this == Cancelling || this == TimingOut
+    val unconfirmed: Boolean get() = this == Unconfirmed || this == UnconfirmedAfterCancel || this == UnconfirmedAfterTimeout
 
     data object Idle : Status(R.string.share_hint)
     data object Ready : Status(R.string.file_ready)
     data object Sending : Status(R.string.sending)
     data object Unconfirmed : Status(R.string.save_unconfirmed)
+    data object UnconfirmedAfterCancel : Status(R.string.save_unconfirmed_cancelled)
+    data object UnconfirmedAfterTimeout : Status(R.string.save_unconfirmed_timeout)
+    data object Interrupted : Status(R.string.send_interrupted)
     data object SendFailed : Status(R.string.send_failed)
     data object SendCancelled : Status(R.string.send_cancelled)
-    data class Saved(val bytes: Long) : Status(R.string.saved_on_computer)
+    data object SendTimedOut : Status(R.string.send_timed_out)
+    data object TlsUnavailable : Status(R.string.tls_unavailable)
+    data object Saved : Status(R.string.saved_on_computer)
     data object Reading : Status(R.string.reading)
     data object Busy : Status(R.string.reader_busy)
     data object Retry : Status(R.string.share_again)
     data object Unsupported : Status(R.string.unsupported)
     data object Missing : Status(R.string.missing_file)
     data object Unreadable : Status(R.string.unreadable)
-    data object TooLarge : Status(R.string.too_large)
+    data object GrantLost : Status(R.string.grant_lost)
+    data object CheckTooLarge : Status(R.string.check_too_large)
+    data object SendTooLarge : Status(R.string.send_too_large)
     data object Cancelling : Status(R.string.cancelling)
+    data object TimingOut : Status(R.string.timing_out)
     data object Cancelled : Status(R.string.cancelled)
     data class Read(val count: Long, val digest: String) : Status(R.string.file_read)
 }
@@ -565,7 +614,7 @@ private fun IntakeScreen(
                     style = MaterialTheme.typography.headlineMedium,
                 )
                 Text(
-                    text = stringResource(status.message),
+                    text = stringResource(if (status == Status.Ready && !supportsLanSend) R.string.file_selected else status.message),
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 )
                 if (status is Status.Read) {
@@ -575,7 +624,7 @@ private fun IntakeScreen(
                 if (sentBytes != null) {
                     Text(stringResource(R.string.bytes_sent, sentBytes))
                 }
-                if (status == Status.Unconfirmed) {
+                if (status.unconfirmed || status == Status.Interrupted) {
                     Text(stringResource(R.string.check_computer))
                 }
                 if (status == Status.Reading || status == Status.Sending) {
@@ -583,28 +632,32 @@ private fun IntakeScreen(
                 }
                 if (!status.working) {
                     if (hasSource) {
-                        TextButton(onClick = { focus.clearFocus(); onScan() }) {
-                            Text(stringResource(R.string.scan_invitation))
-                        }
-                        scanMessage?.let {
-                            Text(stringResource(it), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-                        }
-                        OutlinedTextField(
-                            modifier = Modifier.fillMaxWidth(),
-                            value = invitation,
-                            onValueChange = onInvitationChanged,
-                            label = { Text(stringResource(R.string.invitation)) },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-                        )
-                        if (address != null) {
-                            Text(stringResource(R.string.destination, address))
-                            Button(onClick = { focus.clearFocus(); onSend() }) {
-                                Text(stringResource(R.string.send))
+                        if (supportsLanSend && status != Status.TlsUnavailable) {
+                            TextButton(onClick = { focus.clearFocus(); onScan() }) {
+                                Text(stringResource(R.string.scan_invitation))
                             }
-                        } else if (invitation.isNotEmpty()) {
-                            Text(stringResource(R.string.invalid_invitation))
+                            scanMessage?.let {
+                                Text(stringResource(it), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                            }
+                            OutlinedTextField(
+                                modifier = Modifier.fillMaxWidth(),
+                                value = invitation,
+                                onValueChange = onInvitationChanged,
+                                label = { Text(stringResource(R.string.invitation)) },
+                                singleLine = true,
+                                visualTransformation = PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                            )
+                            if (address != null) {
+                                Text(stringResource(R.string.destination, address))
+                                Button(onClick = { focus.clearFocus(); onSend() }) {
+                                    Text(stringResource(R.string.send))
+                                }
+                            } else if (invitation.isNotEmpty()) {
+                                Text(stringResource(R.string.invalid_invitation))
+                            }
+                        } else if (!supportsLanSend) {
+                            Text(stringResource(R.string.tls_unavailable))
                         }
                         TextButton(onClick = onCheck) { Text(stringResource(R.string.check_file)) }
                     }
