@@ -1,0 +1,87 @@
+name: Build checks
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Install zgx Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libdbus-1-dev libwayland-dev
+
+      - name: Install repository-pinned Rust toolchain
+        run: rustup toolchain install --no-self-update --profile minimal --component rustfmt,clippy
+
+      - name: Check Rust formatting
+        run: |
+          cargo fmt --all --check
+          cargo fmt --manifest-path apps/desktop/Cargo.toml --all --check
+
+      - name: Clippy (deny warnings)
+        run: |
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path apps/desktop/Cargo.toml --all-targets -- -D warnings
+
+      - name: Build receiver and desktop
+        run: |
+          cargo build --locked --workspace
+          cargo build --locked --manifest-path apps/desktop/Cargo.toml
+
+  android:
+    name: Android debug build and lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9
+        with:
+          distribution: temurin
+          java-version: '21.0.13+100000002.0.LTS'
+
+      - name: Install Android SDK Platform 36 and Build Tools 35.0.0
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0"'
+
+      - name: Assemble unsigned debug APK and lint
+        working-directory: apps/android
+        run: |
+          init_script="$RUNNER_TEMP/unsigned-debug.init.gradle"
+          tee "$init_script" >/dev/null <<'GRADLE'
+          gradle.beforeProject { project ->
+              project.pluginManager.withPlugin('com.android.application') {
+                  project.androidComponents.finalizeDsl { android ->
+                      android.buildTypes.debug.signingConfig = null
+                  }
+              }
+          }
+          GRADLE
+          ./gradlew --no-daemon --continue --init-script "$init_script" :app:assembleDebug :app:lintDebug
