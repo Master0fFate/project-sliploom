@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">SEAM</string>
+    <string name="share_hint">Share one image or PDF from another app and choose SEAM.</string>
+    <string name="reading">Reading file…</string>
+    <string name="unsupported">Share one image or PDF.</string>
+    <string name="missing_file">No file was attached.</string>
+    <string name="unreadable">Could not read the shared file.</string>
+    <string name="too_large">This file exceeds the 100 MiB limit.</string>
+    <string name="cancel">Cancel</string>
+    <string name="cancelled">Reading cancelled.</string>
+    <string name="file_read">File read. Nothing was sent.</string>
+    <string name="byte_count">Bytes read: %1$d</string>
+    <string name="sha256">SHA-256: %1$s</string>
+</resources>
