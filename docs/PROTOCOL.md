@@ -1,6 +1,6 @@
 # SEAM receive-once protocol — Phase 2
 
-This records the adopted design against baseline `9b5b29f`. It is not implementation evidence or release confirmation. Operational defaults and limits below are planned until reverified in the integrated flow.
+This specifies original filename support as an extension to the deployed development protocol at `53c3b4f`. It is not implementation evidence or release confirmation.
 
 ## Invitation and trust
 
@@ -28,11 +28,20 @@ After TLS, the client starts with the four ASCII bytes `SEAM` followed by byte `
 | Client → server | `0x01` AUTH | 32 | Invite bearer secret |
 | Server → client | `0x02` ACCEPT | 0 | Empty; sent only after successful authentication |
 | Client → server | `0x03` BEGIN | 9 | One-byte kind (`0x01` image or `0x02` PDF), then unsigned 64-bit big-endian declared byte count (all ones means unknown) |
+| Client → server | `0x08` NAME | 1–180 | Optional original basename as raw UTF-8 bytes |
 | Client → server | `0x04` DATA | 1–65536 | Raw data bytes; zero or more DATA frames |
 | Client → server | `0x05` END | 40 | Unsigned 64-bit big-endian actual byte count, then 32-byte SHA-256 digest of all DATA payload bytes in order |
 | Server → client | `0x06` COMMITTED | 40 | Exact END payload echoed back |
 
-Successful AUTH consumes the invite and admits only that transfer. Reject invalid frame types, lengths, or ordering. No sender filename is transmitted; the receiver chooses the local filename.
+Successful AUTH consumes the invite and admits only that transfer. Reject invalid frame types, lengths, or ordering.
+
+## Original filenames
+
+On Wi-Fi, ACCEPT precedes BEGIN. On USB (`SEAM` followed by `0x03`), BEGIN is the offer and the desktop replies with ACCEPT (`0x02`) or DECLINE (`0x07`). On either transport, the sender may send at most one NAME frame after both BEGIN and ACCEPT and before the first DATA frame (or before END if there is no DATA). USB never sends the filename before the user chooses **Accept**. NAME is metadata and does not count toward the file byte count or DATA digest. Do not retain filenames in logs.
+
+The receiver uses the supplied name only if it is a safe basename, not a path, and its extension is compatible with the received file type. If the name is absent or unsuitable, use a generic document or image name without a `SEAM` prefix. On a collision, add a number before the extension: for example, save `report.pdf` and then `report (2).pdf`. Do not alter any existing file.
+
+Updated receivers accept older senders that omit NAME. Older receivers may reject transfers that include NAME. Update the Android and desktop apps together.
 
 ## Commit and failure
 

@@ -30,6 +30,14 @@ This option currently uses USB debugging already authorized for the Windows PC. 
 
 Cable mode requires no QR code, invitation, or save-folder setup. Accepted files go to `%LOCALAPPDATA%\SEAM`. SEAM sends no file content before **Accept**, never overwrites existing files, and does not automatically fall back to Wi-Fi.
 
+## Original filenames
+
+The [development protocol extension](docs/PROTOCOL.md#original-filenames) lets the sender include the original filename in an optional `0x08` NAME frame (1–180 raw UTF-8 bytes) after BEGIN and acceptance, before DATA or END. Over USB, the name is never sent before you choose **Accept**. Filenames are not retained in logs.
+
+The receiver uses the original name only if it is a safe basename with an extension compatible with the file type. Otherwise it uses a generic document or image name without a `SEAM` prefix. If `report.pdf` already exists, the next copy is saved as `report (2).pdf` without altering any existing file.
+
+Updated receivers accept older senders that omit the name, but older receivers may reject transfers that include it. Update the Android and desktop apps together.
+
 ## Optional: receive one file over Wi-Fi
 
 1. Put both devices on the same local Wi-Fi, where they can reach each other. On Windows, choose **Use Wi-Fi instead**, confirm the **Private IPv4 address**, and select a private save folder you own. Click **Receive once**. SEAM does not change firewall rules.
