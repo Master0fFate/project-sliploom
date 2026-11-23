@@ -19,25 +19,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -683,80 +673,104 @@ private fun IntakeScreen(
     onCancel: () -> Unit,
 ) {
     val focus = LocalFocusManager.current
-    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
-        Surface(modifier = Modifier.fillMaxSize()) {
-            Column(
-                modifier = Modifier
-                    .safeDrawingPadding()
-                    .imePadding()
-                    .verticalScroll(rememberScrollState())
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text(
-                    text = stringResource(R.string.app_name),
-                    modifier = Modifier.semantics { heading() },
-                    style = MaterialTheme.typography.headlineMedium,
-                )
-                Text(
-                    text = stringResource(if (status == Status.Ready && !supportsLanSend) R.string.file_selected else status.message),
-                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-                )
-                if (status is Status.Read) {
-                    Text(stringResource(R.string.byte_count, status.count))
-                    Text(stringResource(R.string.sha256, status.digest))
+    val scan = { focus.clearFocus(); onScan() }
+    val headline = when (status) {
+        Status.Idle -> R.string.send_a_file
+        Status.Ready -> R.string.file_selected
+        Status.TlsUnavailable -> R.string.sending_unavailable
+        Status.Interrupted -> R.string.save_status_unknown
+        Status.UnconfirmedAfterCancel, Status.UnconfirmedAfterTimeout -> R.string.save_unconfirmed
+        Status.Cancelling -> R.string.cancelling_headline
+        Status.TimingOut -> R.string.timing_out_headline
+        Status.GrantLost -> R.string.file_access_lost
+        is Status.Read -> R.string.file_checked
+        else -> status.message
+    }
+    val detail = when (status) {
+        Status.Idle, Status.TlsUnavailable, Status.Interrupted, Status.GrantLost, is Status.Read -> status.message
+        Status.UnconfirmedAfterCancel -> R.string.send_cancelled_short
+        Status.UnconfirmedAfterTimeout -> R.string.timing_out_headline
+        Status.Cancelling, Status.TimingOut -> R.string.waiting_for_stop
+        Status.Ready -> if (supportsLanSend) R.string.file_ready else R.string.tls_unavailable
+        Status.WaitingForComputer -> R.string.accept_on_computer
+        Status.CableUnavailable -> R.string.connect_usb
+        else -> null
+    }
+    SeamMaterial(bottomBiased = cableMode && status.working) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                text = stringResource(headline),
+                modifier = Modifier.semantics {
+                    heading()
+                    liveRegion = LiveRegionMode.Polite
+                },
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.headlineMedium,
+            )
+            detail?.let { SeamDetail(stringResource(it)) }
+            if (status is Status.Read) {
+                SeamDetail(stringResource(R.string.byte_count, status.count))
+                SeamDetail(stringResource(R.string.sha256, status.digest))
+            }
+            if (sentBytes != null) {
+                SeamDetail(stringResource(R.string.bytes_sent, sentBytes))
+            }
+            if (status.unconfirmed || status == Status.Interrupted) {
+                SeamDetail(stringResource(R.string.check_computer))
+            }
+        }
+        when {
+            status.canCancel -> SeamAction(stringResource(R.string.cancel), onCancel)
+            status.working -> Unit
+            cableMode && hasSource -> {
+                if (status.canRetryCable) {
+                    SeamAction(stringResource(R.string.try_cable_again), onRetryCable)
                 }
-                if (sentBytes != null) {
-                    Text(stringResource(R.string.bytes_sent, sentBytes))
-                }
-                if (status.unconfirmed || status == Status.Interrupted) {
-                    Text(stringResource(R.string.check_computer))
-                }
-                if (status.canCancel) {
-                    Button(onClick = onCancel) { Text(stringResource(R.string.cancel)) }
-                }
-                if (!status.working && cableMode && hasSource) {
-                    if (status == Status.CableUnavailable) Text(stringResource(R.string.connect_usb))
-                    if (status.canRetryCable) {
-                        Button(onClick = onRetryCable) { Text(stringResource(R.string.try_cable_again)) }
+                if (status == Status.CableUnavailable && supportsLanSend) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        SeamAction(stringResource(R.string.use_wifi), onUseWifi, primary = false)
                     }
-                    if (status == Status.CableUnavailable && supportsLanSend) {
-                        TextButton(onClick = onUseWifi) { Text(stringResource(R.string.use_wifi)) }
-                    }
                 }
-                if (!status.working && (!cableMode || !hasSource)) {
-                    if (hasSource) {
-                        if (supportsLanSend && status != Status.TlsUnavailable) {
-                            TextButton(onClick = { focus.clearFocus(); onScan() }) {
-                                Text(stringResource(R.string.scan_invitation))
-                            }
-                            scanMessage?.let {
-                                Text(stringResource(it), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-                            }
-                            OutlinedTextField(
-                                modifier = Modifier.fillMaxWidth(),
-                                value = invitation,
-                                onValueChange = onInvitationChanged,
-                                label = { Text(stringResource(R.string.invitation)) },
-                                singleLine = true,
-                                visualTransformation = PasswordVisualTransformation(),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-                            )
-                            if (address != null) {
-                                Text(stringResource(R.string.destination, address))
-                                Button(onClick = { focus.clearFocus(); onSend() }) {
-                                    Text(stringResource(R.string.send))
-                                }
-                            } else if (invitation.isNotEmpty()) {
-                                Text(stringResource(R.string.invalid_invitation))
-                            }
-                        } else if (!supportsLanSend) {
-                            Text(stringResource(R.string.tls_unavailable))
+            }
+            !hasSource -> SeamAction(stringResource(R.string.pick_file), onPick)
+            supportsLanSend && status != Status.TlsUnavailable -> {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        modifier = Modifier.fillMaxWidth(),
+                        value = invitation,
+                        onValueChange = onInvitationChanged,
+                        label = { Text(stringResource(R.string.invitation)) },
+                        singleLine = true,
+                        shape = SeamControlShape,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                    )
+                    if (address != null) {
+                        SeamDetail(stringResource(R.string.destination, address))
+                        SeamAction(stringResource(R.string.send), { focus.clearFocus(); onSend() })
+                    } else {
+                        val feedback = scanMessage ?: R.string.invalid_invitation.takeIf { invitation.isNotEmpty() }
+                        feedback?.let {
+                            SeamDetail(stringResource(it), Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                         }
-                        TextButton(onClick = onCheck) { Text(stringResource(R.string.check_file)) }
+                        SeamAction(stringResource(R.string.scan_invitation), scan)
                     }
-                    TextButton(onClick = onPick) { Text(stringResource(R.string.pick_file)) }
                 }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (address != null) {
+                        SeamAction(stringResource(R.string.scan_invitation), scan, primary = false)
+                    }
+                    SeamAction(stringResource(R.string.check_file), onCheck, primary = false)
+                    SeamAction(stringResource(R.string.pick_file), onPick, primary = false)
+                }
+            }
+            else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!supportsLanSend && status != Status.Ready && status != Status.TlsUnavailable) {
+                    SeamDetail(stringResource(R.string.tls_unavailable))
+                }
+                SeamAction(stringResource(R.string.check_file), onCheck)
+                SeamAction(stringResource(R.string.pick_file), onPick, primary = false)
             }
         }
     }
