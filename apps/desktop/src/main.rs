@@ -16,7 +16,7 @@ use zgx::compose::prelude::*;
 use zgx::reactive::Signal;
 use zgx::scene::{Color, Rect};
 use zgx::semantics::Live;
-use zgx_desktop::{Application, FileDialogOptions, WindowContext, WindowOptions};
+use zgx_desktop::{Application, FileDialogOptions, Titlebar, WindowContext, WindowOptions};
 
 use material::{
     backdrop, field, headline, metadata, mode_action, native_glass, pane, secondary, wordmark,
@@ -27,6 +27,7 @@ mod adb;
 #[cfg(target_os = "windows")]
 mod cable_ui;
 mod material;
+mod titlebar;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Activity {
@@ -430,7 +431,7 @@ fn receive_screen(
         reset_scroll.set(0.);
     });
     cx.render(
-        backdrop(cx, glass).child(
+        backdrop(cx, glass).child(titlebar::view(cx)).child(
             scroll(offset)
                 .w_full()
                 .grow()
@@ -444,7 +445,9 @@ fn receive_screen(
                         .gap(8.)
                         .items_center()
                         .justify_center()
-                        .reactive_style(move || Styles::new().min_h(viewport.get().1))
+                        .reactive_style(move || {
+                            Styles::new().min_h((viewport.get().1 - titlebar::HEIGHT).max(0.))
+                        })
                         .child(
                             column()
                                 .w_full()
@@ -470,6 +473,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             width: 480.,
             height: 480.,
             min_size: Some((360., 380.)),
+            titlebar: Titlebar::Hidden,
             glass,
             ..Default::default()
         })
