@@ -1,0 +1,11 @@
+[package]
+name = "seam-desktop"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+zgx = "=0.1.10"
+zgx-desktop = "=0.1.10"
