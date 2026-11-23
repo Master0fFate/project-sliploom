@@ -11,10 +11,10 @@ use receiver_service::lan::cable::{CableReceiver, Offer};
 use zgx::compose::prelude::*;
 use zgx::reactive::Signal;
 use zgx::semantics::Live;
-use zgx::theme::tok;
 use zgx_desktop::{TaskSpawner, WindowContext};
 
 use crate::adb::AdbBridge;
+use crate::material::{action, headline, metadata, secondary};
 
 const TICK: Duration = Duration::from_millis(100);
 const DECISION_TIME: Duration = Duration::from_secs(30);
@@ -204,72 +204,58 @@ impl Cable {
         let status = self.status.clone();
         let retry = self.retry.clone();
         let folder = self.folder.clone();
-        let folder_prompt = self.prompt.clone();
-        let retry_ui = self.clone();
-        let folder_ui = self.clone();
-        column()
-            .gap(14.)
-            .child(text("Receive by cable").heading(1).text_size(26.))
-            .child(switch(
-                move || prompt.get(),
-                move |prompt, _| match prompt {
-                    Some(prompt) => ui.prompt_card(prompt),
-                    None => text_signal({
-                        let status = status.clone();
-                        move || status.get()
-                    })
-                    .text_wrap(true)
-                    .live(Live::Polite),
-                },
-            ))
-            .child(switch(
-                move || retry.get(),
-                move |show, _| {
-                    if show {
-                        let ui = retry_ui.clone();
-                        row().child(
-                            button()
-                                .h(44.)
-                                .child(text("Retry cable"))
-                                .on_click(move || ui.start()),
-                        )
-                    } else {
-                        div()
-                    }
-                },
-            ))
-            .child(switch(
-                move || folder.with(Option::is_some) && folder_prompt.with(Option::is_none),
-                move |show, _| {
-                    if !show {
-                        return div();
-                    }
-                    let ui = folder_ui.clone();
-                    column()
-                        .gap(8.)
-                        .child(text("Files save to your private SEAM folder.").text_wrap(true))
-                        .child(
-                            row().child(button().h(44.).child(text("Open folder")).on_click(
-                                move || {
-                                    if let Some(path) = ui.folder.get() {
-                                        let _ = thread::Builder::new()
-                                            .name("seam-open-folder".into())
-                                            .spawn(move || {
-                                                if let Ok(folder) = private_folder::open(false)
-                                                    && folder.path == path
-                                                {
-                                                    folder.explore();
-                                                }
-                                            });
-                                    }
-                                },
-                            )),
-                        )
-                },
-            ))
+        switch(
+            move || prompt.get(),
+            move |prompt, _| {
+                if let Some(prompt) = prompt {
+                    return ui.prompt_view(prompt);
+                }
+                let status = status.clone();
+                let actions = ui.clone();
+                let retry = retry.clone();
+                let folder = folder.clone();
+                column()
+                    .gap(16.)
+                    .child(
+                        column()
+                            .gap(8.)
+                            .child(headline("Receive by cable"))
+                            .child(metadata(text_signal(move || status.get())).live(Live::Polite)),
+                    )
+                    .child(switch(
+                        move || (retry.get(), folder.with(Option::is_some)),
+                        move |(retry, has_folder), _| {
+                            let retry_ui = actions.clone();
+                            let folder_ui = actions.clone();
+                            row()
+                                .gap(8.)
+                                .when(retry, |row| {
+                                    row.child(
+                                        secondary("Retry cable").on_click(move || retry_ui.start()),
+                                    )
+                                })
+                                .when(has_folder, |row| {
+                                    row.child(secondary("Open folder").on_click(move || {
+                                        if let Some(path) = folder_ui.folder.get() {
+                                            let _ = thread::Builder::new()
+                                                .name("seam-open-folder".into())
+                                                .spawn(move || {
+                                                    if let Ok(folder) = private_folder::open(false)
+                                                        && folder.path == path
+                                                    {
+                                                        folder.explore();
+                                                    }
+                                                });
+                                        }
+                                    }))
+                                })
+                        },
+                    ))
+            },
+        )
     }
 
-    fn prompt_card(&self, prompt: Prompt) -> View {
+    fn prompt_view(&self, prompt: Prompt) -> View {
         let decline = self.clone();
         let accept = self.clone();
         let question = if prompt.is_pdf {
@@ -283,33 +269,26 @@ impl Cable {
         );
         let no = prompt.clone();
         column()
-            .gap(12.)
-            .p(16.)
-            .bg(tok::SURFACE_RAISED)
-            .border(1.)
-            .border_color(tok::BORDER_STRONG)
+            .gap(24.)
             .child(
-                text(question)
-                    .heading(2)
-                    .text_size(22.)
-                    .live(Live::Assertive),
+                column()
+                    .gap(8.)
+                    .child(headline(question).live(Live::Assertive))
+                    .child(metadata(text(detail))),
             )
-            .child(text(detail).text_wrap(true))
             .child(
                 row()
-                    .gap(10.)
+                    .gap(8.)
                     .child(
-                        button()
-                            .size(110., 48.)
-                            .child(text("Decline"))
+                        secondary("Decline")
+                            .grow()
+                            .h(48.)
                             .on_click(move || decline.decide(&no, false)),
                     )
                     .child(
-                        button()
-                            .size(110., 48.)
-                            .bg(tok::ACCENT)
-                            .text_color(tok::ACCENT_TEXT)
-                            .child(text("Accept"))
+                        action(text("Accept"), true)
+                            .grow()
+                            .h(48.)
                             .on_click(move || accept.decide(&prompt, true)),
                     ),
             )

@@ -16,13 +16,15 @@ use zgx::compose::prelude::*;
 use zgx::reactive::Signal;
 use zgx::scene::{Color, Rect};
 use zgx::semantics::Live;
-use zgx::theme::tok;
 use zgx_desktop::{Application, FileDialogOptions, WindowContext, WindowOptions};
+
+use material::{backdrop, field, headline, metadata, mode_action, native_glass, pane, secondary};
 
 #[cfg(target_os = "windows")]
 mod adb;
 #[cfg(target_os = "windows")]
 mod cable_ui;
+mod material;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Activity {
@@ -187,7 +189,7 @@ fn likely_address() -> Option<Ipv4Addr> {
 
 fn invitation_qr(code: QrCode) -> View {
     const QUIET_ZONE: usize = 4;
-    const MODULE: f32 = 6.;
+    const MODULE: f32 = 4.;
     let width = code.width();
     let size = (width + 2 * QUIET_ZONE) as f32 * MODULE;
     canvas(move |_| {
@@ -259,38 +261,38 @@ fn wifi_view(
     let folder = screen.folder.clone();
     let invitation = screen.invitation.clone();
     let invitation_visible = invitation.clone();
+    let status_visible = status.clone();
     column()
         .gap(16.)
-        .child(text("Receive over Wi-Fi").heading(1).text_size(24.))
+        .child(headline("Receive over Wi-Fi"))
         .child(
-            column().gap(6.).child(text("Private IPv4 address")).child(
-                text_input("Private IPv4 address", screen.address)
-                    .placeholder("e.g. 192.168.1.20")
-                    .w(220.)
-                    .disabled_when(controls_disabled.clone()),
-            ),
+            column()
+                .gap(8.)
+                .child(metadata(text("Private IPv4 address")))
+                .child(
+                    field(text_input("Private IPv4 address", screen.address))
+                        .placeholder("e.g. 192.168.1.20")
+                        .disabled_when(controls_disabled.clone()),
+                ),
         )
         .child(
             column()
-                .gap(6.)
-                .items_start()
+                .gap(8.)
                 .child(
-                    button()
-                        .child(text("Choose save folder"))
-                        .disabled_when(controls_disabled.clone())
-                        .on_click(pick_folder),
+                    row().child(
+                        secondary("Choose save folder")
+                            .disabled_when(controls_disabled.clone())
+                            .on_click(pick_folder),
+                    ),
                 )
-                .child(
-                    text_signal(move || {
-                        folder.with(|folder| {
-                            folder.as_ref().map_or_else(
-                                || "No folder selected".into(),
-                                |path| path.display().to_string(),
-                            )
-                        })
+                .child(metadata(text_signal(move || {
+                    folder.with(|folder| {
+                        folder.as_ref().map_or_else(
+                            || "No folder selected".into(),
+                            |path| path.display().to_string(),
+                        )
                     })
-                    .text_wrap(true),
-                ),
+                }))),
         )
         .child(row().child(switch(
             move || matches!(activity.get(), Activity::Receiving | Activity::Cancelling),
@@ -299,61 +301,65 @@ fn wifi_view(
                 let tasks = tasks.clone();
                 if active {
                     let activity = screen.activity.clone();
-                    button()
-                        .child(text("Cancel"))
+                    secondary("Cancel")
                         .disabled_when(move || activity.get() == Activity::Cancelling)
                         .on_click(move || screen.stop())
                 } else {
-                    button()
-                        .child(text("Receive once"))
-                        .bg(tok::ACCENT)
-                        .text_color(tok::ACCENT_TEXT)
+                    secondary("Receive once")
                         .disabled_when(controls_disabled.clone())
                         .on_click(move || screen.start(&tasks))
                 }
             },
         )))
         .child(
-            text_signal(move || status.get())
-                .text_wrap(true)
-                .live(Live::Polite),
+            switch(
+                move || !status_visible.with(String::is_empty),
+                move |visible, _| {
+                    if visible {
+                        let status = status.clone();
+                        metadata(text_signal(move || status.get())).live(Live::Polite)
+                    } else {
+                        div().hidden()
+                    }
+                },
+            )
+            .display_contents(),
         )
-        .child(switch(
-            move || !invitation_visible.with(String::is_empty),
-            move |visible, _| {
-                if !visible {
-                    return div();
-                }
-                let qr = invitation.with(|value| QrCode::new(value.as_bytes()));
-                let scan = match qr {
-                    Ok(code) => column()
+        .child(
+            switch(
+                move || !invitation_visible.with(String::is_empty),
+                move |visible, _| {
+                    if !visible {
+                        return div().hidden();
+                    }
+                    let qr = invitation.with(|value| QrCode::new(value.as_bytes()));
+                    let scan = match qr {
+                        Ok(code) => column()
+                            .gap(8.)
+                            .child(metadata(text("Scan invitation").heading(2)))
+                            .child(invitation_qr(code)),
+                        Err(_) => metadata(text(
+                            "Couldn’t make a QR code. Enter the invitation manually.",
+                        )),
+                    };
+                    let invitation = invitation.clone();
+                    column()
                         .gap(8.)
-                        .child(text("Scan invitation").heading(2))
-                        .child(invitation_qr(code)),
-                    Err(_) => text("Couldn’t make a QR code. Enter the invitation manually."),
-                };
-                let invitation = invitation.clone();
-                column()
-                    .gap(8.)
-                    .child(scan)
-                    .child(text("Manual invitation"))
-                    .child(
-                        text_signal(move || invitation.get())
-                            .text_wrap(true)
-                            .selectable(true)
-                            .p(12.)
-                            .bg(tok::INPUT_BG)
-                            .border(1.)
-                            .border_color(tok::BORDER_STRONG),
-                    )
-            },
-        ))
+                        .child(scan)
+                        .child(metadata(text("Manual invitation")))
+                        .child(metadata(text_signal(move || invitation.get())).selectable(true))
+                },
+            )
+            .display_contents(),
+        )
 }
 
 fn receive_screen(
     cx: &mut WindowContext,
+    glass: bool,
     #[cfg(target_os = "windows")] workers: cable_ui::Workers,
 ) {
+    cx.window.set_theme(Some(zgx::theme::Appearance::Dark));
     let runtime = &cx.ui.runtime;
     let wifi = runtime.signal(false);
     let screen = Screen {
@@ -387,70 +393,71 @@ fn receive_screen(
                 let view = cable_screen.view();
                 #[cfg(not(target_os = "windows"))]
                 let view = column()
-                    .gap(12.)
-                    .child(text("Receive by cable").heading(1).text_size(24.))
-                    .child(text("Cable receive is available on Windows.").text_wrap(true));
+                    .gap(8.)
+                    .child(headline("Receive by cable"))
+                    .child(metadata(text("Cable receive is available on Windows.")));
                 view
             };
-            column().p(24.).child(view)
+            pane(view)
         },
-    );
-    let mode_label = wifi.clone();
+    )
+    .display_contents();
+    let viewport = cx.viewport.clone();
+    let mode_switch = mode_action(text_signal(move || {
+        if wifi.get() {
+            "Use cable instead"
+        } else {
+            "Use Wi-Fi instead"
+        }
+        .into()
+    }))
+    .on_click(move || {
+        let wifi_active = mode.get();
+        if wifi_active {
+            screen.stop();
+        } else if screen.address.with(String::is_empty)
+            && let Some(ip) = likely_address()
+        {
+            screen.address.set(ip.to_string());
+        }
+        #[cfg(target_os = "windows")]
+        cable.enable(wifi_active);
+        mode.set(!wifi_active);
+        reset_scroll.set(0.);
+    });
     cx.render(
-        column()
-            .bg(tok::SURFACE_BASE)
-            .child(
-                scroll(offset)
-                    .grow()
-                    .min_h(0.)
-                    .scrollbar(true)
-                    .child(content),
-            )
-            .child(
-                row().p(16.).bg(tok::SURFACE_RAISED).child(
-                    button()
-                        .h(44.)
-                        .child(text_signal(move || {
-                            if mode_label.get() {
-                                "Use cable instead"
-                            } else {
-                                "Use Wi-Fi instead"
-                            }
-                            .into()
-                        }))
-                        .on_click(move || {
-                            let wifi_active = mode.get();
-                            if wifi_active {
-                                screen.stop();
-                            } else if screen.address.with(String::is_empty)
-                                && let Some(ip) = likely_address()
-                            {
-                                screen.address.set(ip.to_string());
-                            }
-                            #[cfg(target_os = "windows")]
-                            cable.enable(wifi_active);
-                            mode.set(!wifi_active);
-                            reset_scroll.set(0.);
-                        }),
-                ),
+        backdrop(cx, glass).child(
+            scroll(offset).grow().min_h(0.).scrollbar(true).child(
+                column()
+                    .p(24.)
+                    .gap(8.)
+                    .items_center()
+                    .justify_center()
+                    .reactive_style(move || Styles::new().min_h(viewport.get().1))
+                    .child(content)
+                    .child(mode_switch),
             ),
+        ),
     );
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     let workers = cable_ui::Workers::default();
+    let glass = native_glass();
     let result = Application::new()
         .window(WindowOptions {
             title: "SEAM".into(),
-            width: 560.,
-            height: 660.,
-            min_size: Some((440., 440.)),
+            width: 480.,
+            height: 480.,
+            min_size: Some((360., 380.)),
+            glass,
             ..Default::default()
         })
         .run(|cx| {
             receive_screen(
                 cx,
+                glass.is_some(),
                 #[cfg(target_os = "windows")]
                 workers.clone(),
             )
