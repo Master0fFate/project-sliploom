@@ -61,7 +61,7 @@ fn run() -> Result<()> {
     tls.write_all(&digest)?;
     tls.conn.send_close_notify();
     tls.flush()?;
-    println!("Published {} bytes to {}", length, output.display());
+    println!("Published {length} bytes");
     Ok(())
 }
 
