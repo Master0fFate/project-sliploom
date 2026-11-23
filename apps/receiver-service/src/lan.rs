@@ -102,9 +102,19 @@ impl ReceiveSession {
     }
 
     pub fn receive(self, cancelled: &AtomicBool, progress: impl FnMut(u64)) -> Result<Receipt> {
+        self.receive_with_start(cancelled, || {}, progress)
+    }
+
+    pub fn receive_with_start(
+        self,
+        cancelled: &AtomicBool,
+        on_authenticated: impl FnOnce(),
+        progress: impl FnMut(u64),
+    ) -> Result<Receipt> {
         let mut stream = self.accept_authenticated(cancelled)?;
         let folder = self.folder;
         drop(self.listener);
+        on_authenticated();
         let now = Instant::now();
         stream.sock.deadline = now + TRANSFER_TIMEOUT;
         stream.sock.idle_deadline = now + IDLE_TIMEOUT;
