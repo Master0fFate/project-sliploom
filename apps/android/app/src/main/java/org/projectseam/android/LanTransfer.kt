@@ -285,6 +285,7 @@ internal fun writeOptionalName(output: OutputStream, displayName: () -> String?,
     val name = displayName()
     checkActive()
     if (name == null || name.length !in 1..MAX_NAME_BYTES) return
+    if (name.any { it == '/' || it == '\\' || it == ':' || it.isISOControl() }) return
     val bytes = try {
         name.encodeToByteArray(throwOnInvalidSequence = true)
     } catch (_: CharacterCodingException) {

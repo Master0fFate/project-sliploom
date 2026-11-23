@@ -17,8 +17,7 @@ pub(super) fn parts<'a>(name: Option<&'a str>, is_pdf: bool, prefix: &[u8]) -> (
     let compatible = if is_pdf {
         extension.eq_ignore_ascii_case("pdf")
     } else {
-        raster_extension(extension)
-            .is_some_and(|claimed| inferred.is_none_or(|kind| kind == claimed))
+        inferred.is_some_and(|kind| raster_extension(extension) == Some(kind))
     };
     if compatible {
         (stem, extension)
