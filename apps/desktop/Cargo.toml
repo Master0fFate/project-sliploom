@@ -7,5 +7,6 @@ publish = false
 [workspace]
 
 [dependencies]
+receiver-service = { path = '../receiver-service' }
 zgx = "=0.1.10"
 zgx-desktop = "=0.1.10"
