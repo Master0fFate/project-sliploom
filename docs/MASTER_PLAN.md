@@ -5,9 +5,9 @@
 > **Core interaction:** Android **Share → SEAM → trusted computer → sent**  
 > **Desktop UI:** Rust + **zgx**, using the *design approach* of Zeron  
 > **Android UI:** Kotlin + Jetpack Compose, with a shared Rust engine  
-> **Status:** Planning and research. **No application code has been implemented yet.**  
+> **Status:** First-session prototypes implemented. Phone-to-PC transfer is not wired up yet.  
 > **Research date:** 2026-11-23  
-> **Document version:** 0.1
+> **Document version:** 0.2
 
 ---
 
@@ -42,7 +42,7 @@ This file is the project control center. Keep it at `docs/MASTER_PLAN.md` after 
 ```text
 SEAM
 ├── 00 Product and research               [research done; product work pending]
-├── 01 Engineering foundation             [ ]
+├── 01 Engineering foundation             [in progress]
 ├── 02 Core network transfer              [ ]
 ├── 03 Android Share integration          [ ]
 ├── 04 zgx desktop receiver               [ ]
@@ -997,7 +997,7 @@ The targets are goals, not observed performance claims.
 
 **Goal:** Prove the stack is workable, and reduce risk before building UI polish.
 
-- [ ] Create Git repository and put this plan at `docs/MASTER_PLAN.md`.
+- [x] Create Git repository and put this plan at `docs/MASTER_PLAN.md`.
 - [ ] Choose license after reviewing zgx and dependency licenses.
 - [ ] Select min Android version and target SDK based on actual test device access.
 - [ ] Choose initial supported desktop OS versions and architectures.
@@ -1274,14 +1274,21 @@ These are the external references used for the **framework and platform facts**.
 
 If starting implementation today, do only the items below before adding visual polish:
 
-1. [ ] Create repository with `docs/MASTER_PLAN.md`, Cargo workspace, and Android Studio project.
-2. [ ] Pin one zgx revision and make a basic window appear on your main desktop OS.
+1. [x] Create repository with `docs/MASTER_PLAN.md`, Cargo workspace, and Android Studio project.
+2. [x] Pin one zgx revision and make a basic window appear on your main desktop OS.
 3. [ ] Make a test Android APK appear as a Share target for a PDF or image.
 4. [ ] Make Kotlin open the shared `content://` stream without copying the whole file into memory.
-5. [ ] Make a Rust receiver CLI accept an encrypted stream and save it safely.
+5. [x] Make a Rust receiver CLI accept an encrypted stream and save it safely (verified on loopback only).
 6. [ ] Connect Android sender to the receiver using a manually entered address.
 7. [ ] Verify the transferred file's content hash and show success only after confirmation.
 8. [ ] Record known failures and only then proceed to discovery, secure pairing, and polished zgx UI.
+
+### First-session results
+
+- Windows x64: the standalone desktop crate pins zgx and zgx-desktop to `0.1.10`, from [upstream commit `c85c72c`](https://github.com/zeronsh/zgx/commit/c85c72c65e6292f133ffd0d6a86ba73fab376401). The locked build passed. UI Automation confirmed a visible native SEAM window, and it closed normally. macOS, Linux and accessibility parity remain unverified.
+- Rust x64: the locked build, formatting and Clippy checks passed. A TLS 1.3 mutually authenticated loopback transfer saved 65,796 bytes with matching SHA-256 `60d0056a4214aa58d4563de2db55648e8e8550a606e511fd7638f4d1f2a7cc92`. Independent QA verified that a second transfer could not replace an existing file. The CLI does not listen on the LAN.
+- Android: the Kotlin/Compose APK built with Gradle 8.14.3, AGP 8.13.2 and JDK 21. Lint reported 0 errors, 12 warnings and 1 hint. On Android API 37, the initial install returned `INSTALL_PARSE_FAILED_NOT_APK`; signature and ZIP integrity checks passed, then `adb install --no-streaming --no-incremental` succeeded. Android resolved the installed SEAM activity for `ACTION_SEND` with both `image/jpeg` and `application/pdf`. The probe reads the granted URI in bounded chunks and displays the byte count and hash without sending a file. A real share from a third-party app is still required to verify the Sharesheet and stream.
+- Next: share a known image and PDF on the phone and compare the probe's byte count and hash with the source. Then connect that stream to an authenticated LAN receiver at a manually entered address. Keep discovery, pairing and polish gated on a real phone-to-PC transfer with receiver confirmation.
 
 ### Definition of the first visible success
 
