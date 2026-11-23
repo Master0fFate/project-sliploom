@@ -18,7 +18,9 @@ use zgx::scene::{Color, Rect};
 use zgx::semantics::Live;
 use zgx_desktop::{Application, FileDialogOptions, WindowContext, WindowOptions};
 
-use material::{backdrop, field, headline, metadata, mode_action, native_glass, pane, secondary};
+use material::{
+    backdrop, field, headline, metadata, mode_action, native_glass, pane, secondary, wordmark,
+};
 
 #[cfg(target_os = "windows")]
 mod adb;
@@ -443,7 +445,15 @@ fn receive_screen(
                         .items_center()
                         .justify_center()
                         .reactive_style(move || Styles::new().min_h(viewport.get().1))
-                        .child(content)
+                        .child(
+                            column()
+                                .w_full()
+                                .shrink_0()
+                                .items_center()
+                                .gap(24.)
+                                .child(wordmark())
+                                .child(content),
+                        )
                         .child(mode_switch),
                 ),
         ),

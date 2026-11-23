@@ -78,11 +78,10 @@ pub(crate) fn pane(content: View) -> View {
         .bg(Color(30, 30, 30, 230))
         .border(1.)
         .border_color(Color(250, 250, 250, 46))
-        .child(wordmark())
         .child(content)
 }
 
-fn wordmark() -> View {
+pub(crate) fn wordmark() -> View {
     let mark = canvas(|_| {
         let x = |source_x: f32| 18. + (source_x - 54.) * (2. / 3.);
         let mut path = Path::builder();
@@ -110,7 +109,7 @@ fn wordmark() -> View {
         drawing
     })
     .size(36., 16.);
-    row().gap(8.).items_center().child(mark).child(
+    row().shrink_0().gap(8.).items_center().child(mark).child(
         text("SEAM")
             .text_size(14.)
             .font_weight(600)
