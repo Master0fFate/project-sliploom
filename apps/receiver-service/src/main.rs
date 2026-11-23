@@ -1,7 +1,7 @@
 use std::{
     env,
-    io::{Read, Write},
-    net::TcpListener,
+    io::{self, Read, Write},
+    net::{TcpListener, TcpStream},
     path::Path,
     process::ExitCode,
     sync::Arc,
@@ -57,12 +57,20 @@ fn run() -> Result<()> {
     expect_end(&mut tls)?;
     stage.as_file().sync_all()?;
     stage.persist_noclobber(output).map_err(|err| err.error)?;
-    tls.write_all(&ACK)?;
-    tls.write_all(&digest)?;
-    tls.conn.send_close_notify();
-    tls.flush()?;
+    send_confirmation(&mut tls, &digest)
+        .map_err(|_| "File published; confirmation could not be sent")?;
     println!("Published {length} bytes");
     Ok(())
+}
+
+fn send_confirmation(
+    tls: &mut Stream<'_, ServerConnection, TcpStream>,
+    digest: &[u8; 32],
+) -> io::Result<()> {
+    tls.write_all(&ACK)?;
+    tls.write_all(digest)?;
+    tls.conn.send_close_notify();
+    tls.flush()
 }
 
 fn main() -> ExitCode {

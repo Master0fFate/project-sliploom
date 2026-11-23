@@ -1194,6 +1194,18 @@ The targets are goals, not observed performance claims.
 - [ ] Keyboard, screen reader, and text scale checks passed.
 - [ ] Install and uninstall tested on advertised platforms.
 - [ ] Permissions, privacy, and source licenses documented.
+- [ ] Final application audit, remediation, and independent recheck complete.
+
+### Final audit and remediation
+
+The [prototype baseline audit](TESTING/BASELINE_AUDIT.md) tracks current findings and verification gaps. It does not close the release gate.
+
+After the agreed release scope is implemented and the quality checks above have run, audit the release candidate before declaring it done or shipping it. The CEO assigns an independent auditor using GPT-6.2 Astra (`openai-codex/gpt-6.2-astra`) at `medium` reasoning effort. Use that same model and effort for the final recheck. If unavailable, keep the gate blocked rather than substituting a model.
+
+1. Audit the exact candidate commit across Android, Windows, macOS, and Linux. Review the code and use real builds and end-to-end checks to cover transfer correctness, failure recovery and data integrity, security and privacy, UX and accessibility, performance, packaging and upgrades, and dependency and license compliance. Record coverage gaps rather than treating them as passes.
+2. Save the report at `docs/TESTING/FINAL_AUDIT.md`. For each finding, record an ID, severity, evidence, affected component, owner, and the check that will prove the fix. Record the audited commit, platforms checked, and any blockers.
+3. Send the report back to the planners to sequence dependent fixes and to the responsible workers to fix confirmed in-scope findings automatically. QA verifies fixes and reruns affected end-to-end flows after integration; workers do not sign off on their own fixes.
+4. Have the independent Astra auditor recheck the integrated candidate. Route new or reopened findings through the same loop. Close the gate only when all confirmed in-scope findings are fixed, required checks pass, and the final report names the verified commit. Missing evidence and blocked checks keep the release open.
 
 ### Metrics to collect (with privacy protections)
 
@@ -1276,8 +1288,8 @@ If starting implementation today, do only the items below before adding visual p
 
 1. [x] Create repository with `docs/MASTER_PLAN.md`, Cargo workspace, and Android Studio project.
 2. [x] Pin one zgx revision and make a basic window appear on your main desktop OS.
-3. [ ] Make a test Android APK appear as a Share target for a PDF or image.
-4. [ ] Make Kotlin open the shared `content://` stream without copying the whole file into memory.
+3. [x] Make a test Android APK appear as a Share target for a PDF or image.
+4. [x] Make Kotlin open the shared `content://` stream without copying the whole file into memory.
 5. [x] Make a Rust receiver CLI accept an encrypted stream and save it safely (verified on loopback only).
 6. [ ] Connect Android sender to the receiver using a manually entered address.
 7. [ ] Verify the transferred file's content hash and show success only after confirmation.
@@ -1287,8 +1299,8 @@ If starting implementation today, do only the items below before adding visual p
 
 - Windows x64: the standalone desktop crate pins zgx and zgx-desktop to `0.1.10`, from [upstream commit `c85c72c`](https://github.com/zeronsh/zgx/commit/c85c72c65e6292f133ffd0d6a86ba73fab376401). The locked build passed. UI Automation confirmed a visible native SEAM window, and it closed normally. macOS, Linux and accessibility parity remain unverified.
 - Rust x64: the locked build, formatting and Clippy checks passed. A TLS 1.3 mutually authenticated loopback transfer saved 65,796 bytes with matching SHA-256 `60d0056a4214aa58d4563de2db55648e8e8550a606e511fd7638f4d1f2a7cc92`. Independent QA verified that a second transfer could not replace an existing file. The CLI does not listen on the LAN.
-- Android: the Kotlin/Compose APK built with Gradle 8.14.3, AGP 8.13.2 and JDK 21. Lint reported 0 errors, 12 warnings and 1 hint. On Android API 37, the initial install returned `INSTALL_PARSE_FAILED_NOT_APK`; signature and ZIP integrity checks passed, then `adb install --no-streaming --no-incremental` succeeded. Android resolved the installed SEAM activity for `ACTION_SEND` with both `image/jpeg` and `application/pdf`. The probe reads the granted URI in bounded chunks and displays the byte count and hash without sending a file. A real share from a third-party app is still required to verify the Sharesheet and stream.
-- Next: share a known image and PDF on the phone and compare the probe's byte count and hash with the source. Then connect that stream to an authenticated LAN receiver at a manually entered address. Keep discovery, pairing and polish gated on a real phone-to-PC transfer with receiver confirmation.
+- Android: the current debug APK passed build and lint (0 errors, 11 warnings, 1 hint). On a Pixel 9 Pro XL (API 37), a separate fixture app shared an image and PDF through the actual Android Sharesheet. SEAM read the granted `content://` streams and displayed matching file lengths and SHA-256 digests for both. A slow read cancelled without a digest, and a subsequent share succeeded. See [physical device checks](TESTING/BASELINE_AUDIT.md#physical-device-checks) for exact fixtures and coverage limits.
+- Next: connect that stream to an authenticated LAN receiver at a manually entered address. Keep discovery, pairing and polish gated on a real phone-to-PC transfer with receiver confirmation.
 
 ### Definition of the first visible success
 

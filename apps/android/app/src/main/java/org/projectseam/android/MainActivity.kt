@@ -1,10 +1,13 @@
 package org.projectseam.android
 
 import android.content.ContentResolver
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.CancellationSignal
+import android.os.OperationCanceledException
 import android.os.Process
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -39,31 +42,35 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withContext
+import java.io.Closeable
 import java.io.IOException
 import java.security.MessageDigest
 
 class MainActivity : ComponentActivity() {
     private val intake by viewModels<IntakeState> { viewModelFactory { initializer { IntakeState() } } }
     private var pendingIntent: Intent? = null
-    private var readJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (savedInstanceState == null) pendingIntent = intent
+        if (savedInstanceState == null) {
+            pendingIntent = intent
+        } else if (savedInstanceState.getBoolean(SHARE_SESSION) && !intake.hasShareSession) {
+            intake.hasShareSession = true
+            intake.status = Status.Retry
+        }
         enableEdgeToEdge()
         setContent {
             val status = intake.status
-            BackHandler(enabled = status == Status.Reading, onBack = ::cancelRead)
-            IntakeScreen(status, ::cancelRead)
+            val cancel: () -> Unit = { intake.cancelRead() }
+            BackHandler(enabled = status == Status.Reading, onBack = cancel)
+            IntakeScreen(status, cancel)
         }
     }
 
@@ -82,19 +89,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(SHARE_SESSION, pendingIntent?.isShare ?: intake.hasShareSession)
+    }
+
     override fun onStop() {
-        cancelRead()
+        intake.cancelRead()
         super.onStop()
     }
 
-    private fun cancelRead() {
-        readJob?.cancel()
-        readJob = null
-        if (intake.status == Status.Reading) intake.status = Status.Cancelled
-    }
-
     private fun receive(intent: Intent) {
-        cancelRead()
+        if (intake.cancelRead()) return
+        intake.hasShareSession = intent.isShare
         val type = intent.type.orEmpty()
         if (intent.action != Intent.ACTION_SEND ||
             !(type == "application/pdf" || type.startsWith("image/") && type.length > 6)
@@ -104,7 +111,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val uri = try {
-            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+            intent.sharedUri()
         } catch (_: RuntimeException) {
             intake.status = Status.Unreadable
             return
@@ -118,61 +125,173 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        intake.status = Status.Reading
-        readJob = lifecycleScope.launch {
-            val context = coroutineContext
-            val result = try {
-                runInterruptible(Dispatchers.IO) {
-                    val grant = checkUriPermission(uri, Process.myPid(), Process.myUid(), Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    if (grant == PackageManager.PERMISSION_GRANTED) {
-                        readStream(contentResolver, uri) { context.ensureActive() }
-                    } else {
-                        Status.Unreadable
-                    }
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: IOException) {
-                Status.Unreadable
-            } catch (_: RuntimeException) {
-                Status.Unreadable
-            }
-            context.ensureActive()
-            intake.status = result
-        }
+        intake.read(applicationContext, uri)
     }
 }
 
+private const val SHARE_SESSION = "share_session"
 private const val MAX_BYTES = 100L * 1024 * 1024
 
-private fun readStream(resolver: ContentResolver, uri: Uri, checkActive: () -> Unit): Status {
-    val digest = MessageDigest.getInstance("SHA-256")
-    val buffer = ByteArray(64 * 1024)
-    var total = 0L
-    val stream = resolver.openInputStream(uri) ?: return Status.Unreadable
-    stream.use { input ->
-        while (true) {
-            checkActive()
-            val size = input.read(buffer, 0, minOf(buffer.size.toLong(), MAX_BYTES - total + 1).toInt())
-            if (size == -1) return Status.Read(total, digest.digest().toHexString())
-            total += size
-            if (total > MAX_BYTES) return Status.TooLarge
-            digest.update(buffer, 0, size)
+private val Intent.isShare: Boolean
+    get() = action == Intent.ACTION_SEND || action == Intent.ACTION_SEND_MULTIPLE
+
+private fun Intent.sharedUri(): Uri? {
+    val extraUri = if (hasExtra(Intent.EXTRA_STREAM)) {
+        requireNotNull(IntentCompat.getParcelableExtra(this, Intent.EXTRA_STREAM, Uri::class.java))
+    } else {
+        null
+    }
+    val clipUri = clipData?.let { clip ->
+        require(clip.itemCount == 1)
+        val item = clip.getItemAt(0)
+        require(item.intent == null)
+        requireNotNull(item.uri)
+    }
+    require(extraUri == null || clipUri == null || extraUri == clipUri)
+    return extraUri ?: clipUri
+}
+
+private object ShareReader {
+    private val scope = CoroutineScope(Dispatchers.Main)
+    private var active: ReadOperation? = null
+
+    fun start(context: Context, uri: Uri, onFinished: (Status) -> Unit): ReadOperation? {
+        if (active != null) return null
+        val operation = ReadOperation()
+        active = operation
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    operation.read(context, uri)
+                } catch (_: IOException) {
+                    Status.Unreadable
+                } catch (_: RuntimeException) {
+                    Status.Unreadable
+                }
+            }
+            val cancellation = operation.cancellation
+            cancellation?.join()
+            active = null
+            onFinished(if (cancellation == null) result else Status.Cancelled)
+        }
+        return operation
+    }
+
+    fun cancel(operation: ReadOperation) {
+        operation.cancel(scope)
+    }
+}
+
+private class ReadOperation {
+    private val lock = Any()
+    private val signal = CancellationSignal()
+    private var resource: Closeable? = null
+    private var cancelled = false
+    var cancellation: Job? = null
+        private set
+
+    fun cancel(scope: CoroutineScope) {
+        if (cancellation != null) return
+        val toClose = synchronized(lock) {
+            cancelled = true
+            takeResource()
+        }
+        cancellation = scope.launch(Dispatchers.IO) {
+            try {
+                signal.cancel()
+            } catch (_: RuntimeException) {
+            } finally {
+                try {
+                    toClose?.close()
+                } catch (_: IOException) {
+                } catch (_: RuntimeException) {
+                }
+            }
         }
     }
+
+    fun read(context: Context, uri: Uri): Status {
+        checkActive()
+        val grant = context.checkUriPermission(uri, Process.myPid(), Process.myUid(), Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (grant != PackageManager.PERMISSION_GRANTED) return Status.Unreadable
+        checkActive()
+        val descriptor = context.contentResolver.openAssetFileDescriptor(uri, "r", signal)
+            ?: return Status.Unreadable
+        if (!register(descriptor)) {
+            descriptor.close()
+            return Status.Cancelled
+        }
+        try {
+            checkActive()
+            if (descriptor.declaredLength > MAX_BYTES) return Status.TooLarge
+            val input = descriptor.createInputStream()
+            if (!register(input)) {
+                input.close()
+                return Status.Cancelled
+            }
+            val digest = MessageDigest.getInstance("SHA-256")
+            val buffer = ByteArray(64 * 1024)
+            var total = 0L
+            while (true) {
+                checkActive()
+                val size = input.read(buffer, 0, minOf(buffer.size.toLong(), MAX_BYTES - total + 1).toInt())
+                checkActive()
+                if (size == -1) return Status.Read(total, digest.digest().toHexString())
+                if (size == 0) return Status.Unreadable
+                total += size
+                if (total > MAX_BYTES) return Status.TooLarge
+                digest.update(buffer, 0, size)
+            }
+        } finally {
+            val toClose = synchronized(lock) { takeResource() }
+            toClose?.close()
+        }
+    }
+
+    private fun checkActive() {
+        if (synchronized(lock) { cancelled }) throw OperationCanceledException()
+    }
+
+    private fun register(opened: Closeable): Boolean = synchronized(lock) {
+        if (cancelled) return false
+        resource = opened
+        true
+    }
+
+    private fun takeResource(): Closeable? = resource.also { resource = null }
 }
 
 private class IntakeState : ViewModel() {
     var status by mutableStateOf<Status>(Status.Idle)
+    var hasShareSession = false
+    private var operation: ReadOperation? = null
+
+    fun read(context: Context, uri: Uri) {
+        operation = ShareReader.start(context, uri) { result ->
+            operation = null
+            status = result
+        }
+        status = if (operation == null) Status.Busy else Status.Reading
+    }
+
+    fun cancelRead(): Boolean {
+        val active = operation ?: return false
+        status = Status.Cancelling
+        ShareReader.cancel(active)
+        return true
+    }
 }
 
 private sealed class Status(val message: Int) {
     data object Idle : Status(R.string.share_hint)
     data object Reading : Status(R.string.reading)
+    data object Busy : Status(R.string.reader_busy)
+    data object Retry : Status(R.string.share_again)
     data object Unsupported : Status(R.string.unsupported)
     data object Missing : Status(R.string.missing_file)
     data object Unreadable : Status(R.string.unreadable)
     data object TooLarge : Status(R.string.too_large)
+    data object Cancelling : Status(R.string.cancelling)
     data object Cancelled : Status(R.string.cancelled)
     data class Read(val count: Long, val digest: String) : Status(R.string.file_read)
 }

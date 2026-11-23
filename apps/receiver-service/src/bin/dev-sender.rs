@@ -1,7 +1,7 @@
 use std::{
     env,
     fs::File,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::TcpStream,
     process::ExitCode,
     sync::Arc,
@@ -39,19 +39,27 @@ fn run() -> Result<()> {
     write_header(&mut tls, length)?;
     let digest = transfer(&mut input, &mut tls, length)?;
     expect_end(&mut input)?;
-    tls.write_all(&digest)?;
+    confirm_publication(&mut tls, &digest)
+        .map_err(|_| "Publication unconfirmed; check the destination before retrying")?;
+    println!("Receiver verified and published {length} bytes");
+    Ok(())
+}
+
+fn confirm_publication(
+    tls: &mut Stream<'_, ClientConnection, TcpStream>,
+    digest: &[u8; 32],
+) -> io::Result<()> {
+    tls.write_all(digest)?;
     tls.conn.send_close_notify();
     tls.flush()?;
     let mut ack = [0; ACK.len()];
     let mut received = [0; 32];
     tls.read_exact(&mut ack)?;
     tls.read_exact(&mut received)?;
-    if ack != ACK || received != digest {
-        return Err(invalid("invalid publish acknowledgment").into());
+    if ack != ACK || received != *digest {
+        return Err(invalid("invalid publish acknowledgment"));
     }
-    expect_end(&mut tls)?;
-    println!("Receiver verified and published {length} bytes");
-    Ok(())
+    expect_end(tls)
 }
 
 fn main() -> ExitCode {
