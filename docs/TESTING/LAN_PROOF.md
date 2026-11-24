@@ -2,6 +2,12 @@
 
 **Not released.** The receive-once results below cover the earlier SEAM2 single-file milestone. See the [current batch walkthrough](../../README.md#send-and-receive-batches-over-wi-fi).
 
+## Device-to-device baseline
+
+On Windows, the production Rust sender and receiver completed a three-file SEAM4 batch on the same host over a private IPv4 interface. The synthetic text file, 65,539-byte binary file and empty file matched byte for byte, and the sender confirmed all three receipts. The receiver kept the original file when the text filename already existed. In a separate declined session, it saved nothing.
+
+This used ephemeral invitations in memory. It did not exercise either app’s UI, two devices, firewall behavior, or trusted pairing.
+
 ## SEAM4 Windows backend smoke
 
 On Windows, two instances of the production Rust Wi-Fi transfer code used a fresh invitation and a private IPv4 interface with synthetic files. One approval accepted three arbitrary files, including an empty file. All three matched their source bytes and SHA-256 digests; an existing name was preserved. An 11-second approval delay did not trip the normal idle timeout. Decline wrote nothing, and cancellation preserved one confirmed file without claiming any later saves. This was a same-host protocol check, not a physical Android-to-Windows transfer.
@@ -28,8 +34,6 @@ At `e670c7f`, before the QR UX and later fixes, the unmodified Rust `ReceiveSess
 - **Pixel 9 Pro XL:** [Physical-device QA](BASELINE_AUDIT.md#physical-device-checks) shared actual files through the Android Sharesheet and verified intake. Nothing was sent; this was not a Pixel-to-PC LAN transfer.
 - **Ubuntu under WSL2 (`9b5b29f`):** The native Linux ELF receiver passed a loopback smoke test and the desktop preview opened a visible WSLg window. This was not a test on bare-metal Linux or of the current desktop milestone.
 
-## Release gates remain open
+## Not yet verified
 
-Release still requires the agreed later features, including discovery and explicit pairing, and platform acceptance beyond the Windows debug PDF smoke. Native macOS and Linux transfers, accessibility, and packaging checks are still open. No Mac test environment or release signatures are available here.
-
-[Master plan §15](../MASTER_PLAN.md#15-release-definition-and-metrics) still applies: only after the agreed product scope is implemented and the required quality checks have run does the independent final audit take place, using GPT-6.2 Astra at `medium` for both the audit and final recheck. If unavailable, the gate stays blocked.
+The records above do not establish a current physical batch transfer in both directions, Android-to-Android transfers, or transfers between two desktops. Native macOS and Linux runtime testing remains open. [Build and packaging checks](../RELEASE_PIPELINE.md) do not cover these routes.

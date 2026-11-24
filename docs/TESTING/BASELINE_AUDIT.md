@@ -1,8 +1,6 @@
 # SEAM prototype baseline audit
 
-Baseline: `65254b4b6db713413d9d22036cc4fe27d6f3156b`. Remediation and verification apply to the working-tree changes on that baseline. Independent auditors: GPT-6.2 Astra at medium reasoning effort. The report was handed to the remediation planner, Android and Rust workers, and separate QA before recheck.
-
-Verdict: not ready for release. This audit covers the implemented Android Share probe, Rust loopback transfer tools, Windows zgx preview, and their build and dependency configuration. It is not the [final application audit](../MASTER_PLAN.md#final-audit-and-remediation).
+This historical report covers the Android Share probe, Rust loopback tools, and Windows desktop preview at baseline `65254b4` and the fixes tested against it. It does not assess the current app or establish release readiness.
 
 | ID · priority · owner | Finding and fix | Recheck and remaining acceptance |
 | --- | --- | --- |
@@ -31,6 +29,4 @@ On a Pixel 9 Pro XL (API 37), a separate disposable Android app shared generated
 
 The PDF also matched for a clip-only share, a slow provider, and a retry after cancelling. The fixture app and test captures were removed; SEAM stayed installed. This is an Android intake check, not a network transfer or broad provider compatibility result.
 
-## Next gate
-
-Implement and verify a manually addressed, authenticated phone-to-PC transfer with receiver-confirmed publication. Keep the development CLI loopback-only. The release gate still requires transfers on Windows, macOS and Linux, explicit pairing and recovery, accessibility and packaging checks, and an exact-candidate final audit.
+For later checks, see [LAN transfer test results](LAN_PROOF.md). The prototype CLI described here is loopback-only.

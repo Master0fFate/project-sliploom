@@ -1,5 +1,5 @@
 <h1 align="center">Sliploom</h1>
-<p align="center">Transfer files directly between Android and Windows, without an account or cloud service.</p>
+<p align="center">Transfer files directly between devices on the same local network. No account or cloud service.</p>
 <p align="center">
   <a href="https://github.com/Master0fFate/project-sliploom/actions/workflows/build.yml"><img src="https://github.com/Master0fFate/project-sliploom/actions/workflows/build.yml/badge.svg?branch=main" alt="Build checks"></a>
 </p>
@@ -10,12 +10,12 @@
   <a href="#ci-artifacts">CI artifacts</a>
 </p>
 
-**Not released.** Android and Windows have Wi-Fi development builds. macOS (Apple Silicon) and Ubuntu 24.04 (x64) are CI build and package targets only, pending transfers to and from a physical Android device on each platform and native platform validation. USB and desktop Trusted Devices are Windows-only for now.
+**Not released.** Android and Windows have Wi-Fi development builds. macOS (Apple Silicon) and Ubuntu 24.04 (x64) are build and package targets; native transfers on those platforms haven’t been verified. USB and desktop Trusted Devices remain Windows-only. See the [transfer test results](docs/TESTING/LAN_PROOF.md) for the routes exercised so far.
 
 ## Send and receive batches over Wi-Fi
 
 1. Run current builds on devices that can reach each other on the same Wi-Fi network. Wi-Fi sending and receiving require Android 10 or later. On the receiver, open **Receive** and choose **Receive once**. On Windows, select **Use Wi-Fi instead** first; on Android, keep the receive sheet open.
-2. Select files with **Pick files** or **Share → Sliploom** on Android, or **Send → Choose files** on Windows. On Android, scan the receiver’s QR code; on Windows, enter its code or open a saved QR image. Check the destination, then select **Send**.
+2. Select files with **Pick files** or **Share → Sliploom** on Android, or **Send → Choose files** on desktop. Scan the receiver’s QR code on Android, enter its code, or open a saved QR image in the desktop app. Check the destination, then select **Send**.
 3. **Receive once** allows one batch from whoever has the short-lived invitation. Keep the QR and code private: there is no second approval. Files appear in **Received files** on Android or in the selected save folder on Windows.
 
 A batch can contain any regular file type: up to **32 files**, **64 MiB per file**, and **256 MiB total**. A file of unknown size counts as 64 MiB. If a transfer is interrupted, already saved files remain. Check the receiver before retrying an unconfirmed file.
@@ -75,4 +75,4 @@ Run [Package desktop candidates](https://github.com/Master0fFate/project-sliploo
 - **macOS Apple Silicon:** disk image (`.dmg`) containing `Sliploom.app`, not notarized.
 - **Ubuntu 24.04 x64:** Debian package (`.deb`).
 
-These are GitHub Actions artifacts, not a public release or evidence of runtime support. See the [build and packaging plan](docs/RELEASE_PIPELINE.md) for release gates.
+These are GitHub Actions artifacts, not a public release or evidence of runtime support. See [build and packaging](docs/RELEASE_PIPELINE.md) for workflow details and checksum instructions.
