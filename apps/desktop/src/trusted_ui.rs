@@ -382,6 +382,7 @@ struct State {
     receive: Signal<Receive>,
     receive_flag: Option<PathBuf>,
     receive_status: Signal<String>,
+    save_folder: Arc<Mutex<Option<PathBuf>>>,
     next_listener: Cell<Instant>,
     devices: Signal<Vec<Device>>,
     ready: Signal<HashMap<Id, (Ipv4Addr, Instant)>>,
@@ -400,8 +401,19 @@ struct State {
 pub(crate) struct Panel(Rc<State>);
 
 impl Panel {
-    pub(crate) fn new(cx: &mut WindowContext, profile: Option<&Profile>, workers: Workers) -> Self {
+    pub(crate) fn new(
+        cx: &mut WindowContext,
+        profile: Option<&Profile>,
+        workers: Workers,
+        folder: Signal<Option<PathBuf>>,
+    ) -> Self {
         let rt = &cx.ui.runtime;
+        let save_folder = Arc::new(Mutex::new(folder.get()));
+        let mirror = save_folder.clone();
+        let folder_effect = rt.effect(move || {
+            let selected = folder.get();
+            *mirror.lock().expect("save folder lock poisoned") = selected;
+        });
         let (events, rx) = mpsc::channel();
         let trust = profile.map(|profile| profile.trust.clone());
         let receive_flag = profile.map(|profile| profile.directory.path.join(RECEIVE_FLAG));
@@ -429,6 +441,7 @@ impl Panel {
             receive: rt.signal(receive),
             receive_flag,
             receive_status: rt.signal(receive_status.into()),
+            save_folder,
             next_listener: Cell::new(Instant::now()),
             devices: rt.signal(Vec::new()),
             ready: rt.signal(HashMap::new()),
@@ -453,6 +466,7 @@ impl Panel {
             closed.0.workers.cancel();
             closed.dismiss();
             drop(dismissal);
+            drop(folder_effect);
         });
         panel.0.refresh_devices();
         panel
@@ -617,20 +631,29 @@ impl Panel {
         };
         let events = state.events.clone();
         let armed = state.armed.clone();
+        let save_folder = state.save_folder.clone();
         let cancel = Cancel::default();
         let stop = cancel.clone();
         if !state.workers.start("sliploom-trusted-receive", cancel.clone(), move || {
-            let message = match cable_ui::open_destination(None, true) {
-                Ok(folder) => {
-                    let _ = trust.serve(address, &folder.path, &stop, |prompt| {
-                        let lease = armed.lock().ok().and_then(|mut armed| armed.take());
-                        !stop.load(Ordering::Acquire) && lease.is_some_and(|lease| confirm(lease, prompt, &events))
-                    }, |receipt| { let _ = events.send(Event::Saved(receipt)); });
-                    "Couldn’t listen for trusted receive. Check Wi-Fi, the default save folder, and whether its port is in use. Retrying…"
-                }
-                Err(_) => "Can’t use the default save folder for trusted receive. Retrying…",
-            };
-            let _ = events.send(Event::ListenerEnded(message));
+            let _ = trust.serve(
+                address,
+                || {
+                    let selected = save_folder.lock().expect("save folder lock poisoned").clone();
+                    cable_ui::open_destination(selected.as_deref(), true)
+                },
+                &stop,
+                |prompt| {
+                    let lease = armed.lock().ok().and_then(|mut armed| armed.take());
+                    !stop.load(Ordering::Acquire)
+                        && lease.is_some_and(|lease| confirm(lease, prompt, &events))
+                },
+                |receipt| {
+                    let _ = events.send(Event::Saved(receipt));
+                },
+            );
+            let _ = events.send(Event::ListenerEnded(
+                "Couldn’t listen for trusted receive. Check Wi-Fi and whether the port is in use. Retrying…",
+            ));
         }) {
             state.receive_status.set("Couldn’t start trusted receive. Retrying…".into());
             return;
@@ -1216,7 +1239,7 @@ impl Panel {
                         .child(quiet_action(text("Forget")).disabled_when(move || busy.get()).on_click(move || forget.forget(id)))
                 })))
             }).display_contents())
-            .child(metadata(text("Allow trusted devices to save to the default private folder without asking while Sliploom is open. This permission stays on until you stop trusted receive. This is separate from your Receive once folder.")))
+            .child(metadata(text("Allow trusted devices to save to the same folder as Receive once and cable receive without asking while Sliploom is open. This permission stays on until you stop trusted receive.")))
             .child(row().gap(4.).child(quiet_action(text_signal(move || match receive.get() {
                 Receive::Off => "Allow trusted receive",
                 Receive::Waiting | Receive::Allowed => "Stop trusted receive",

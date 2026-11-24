@@ -57,10 +57,10 @@ mod unsupported {
             unavailable()
         }
 
-        pub fn serve(
+        pub fn serve<D: AsRef<Path> + Send>(
             &self,
             _: Ipv4Addr,
-            _: &Path,
+            _: impl Fn() -> io::Result<D>,
             _: &AtomicBool,
             _: impl Fn(PairPrompt) -> bool,
             _: impl Fn(Receipt),

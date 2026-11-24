@@ -18,7 +18,7 @@
 2. Select files with **Pick files** or **Share → Sliploom** on Android, or **Send → Choose files** on desktop. Scan the receiver’s QR code on Android, enter its code, or open a saved QR image in the desktop app. Check the destination, then select **Send**.
 3. **Receive once** allows one batch from whoever has the short-lived invitation. Keep the QR and code private: there is no second approval. Files appear in **Received files** on Android or in the selected save folder on Windows, which defaults to `%LOCALAPPDATA%\Sliploom`. Existing received files are left in place.
 
-On desktop, **Choose save folder** remembers your choice across launches. Windows uses the same preference for Wi‑Fi **Receive once** and cable receive. If the folder is no longer usable, Sliploom asks you to choose again. Trusted receive on Windows still uses the default folder.
+On desktop, **Choose save folder** remembers your choice across launches. Windows uses the same folder for Wi‑Fi **Receive once**, cable receive, and trusted receive. If the folder is no longer usable, choose another one. Changing folders doesn’t turn off trusted receive; a trusted batch already in progress finishes in the folder it started with.
 
 A batch can contain any regular file type: up to **32 files**, **64 MiB per file**, and **256 MiB total**. A file of unknown size counts as 64 MiB. If a transfer is interrupted, already saved files remain. Check the receiver before retrying an unconfirmed file.
 
