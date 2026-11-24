@@ -26,28 +26,53 @@ pub(super) fn parts<'a>(name: Option<&'a str>, is_pdf: bool, prefix: &[u8]) -> (
     }
 }
 
+pub(super) fn batch_parts(name: &str) -> (&str, Option<&str>) {
+    let limit = super::MAX_NAME_BYTES;
+    if name.len() <= limit && portable(name) {
+        return name
+            .rsplit_once('.')
+            .map_or((name, None), |(stem, extension)| (stem, Some(extension)));
+    }
+    let extension = name.rsplit_once('.').and_then(|(_, extension)| {
+        (!extension.is_empty()
+            && extension.len() <= limit - "file.".len()
+            && portable_characters(extension)
+            && !extension.ends_with(' '))
+        .then_some(extension)
+    });
+    ("file", extension)
+}
+
 fn portable(name: &str) -> bool {
     if name.is_empty()
         || name.starts_with(['.', ' '])
         || name.ends_with(['.', ' '])
-        || name.chars().any(|ch| {
-            ch.is_control()
-                || matches!(
-                    ch,
-                    '/' | '\\' | ':' | '"' | '<' | '>' | '|' | '?' | '*'
-                        | '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}'
-                        | '\u{2066}'..='\u{206f}'
-                )
-        })
+        || !portable_characters(name)
     {
         return false;
     }
+    !reserved_device(name)
+}
+
+fn portable_characters(name: &str) -> bool {
+    !name.chars().any(|ch| {
+        ch.is_control()
+            || matches!(
+                ch,
+                '/' | '\\' | ':' | '"' | '<' | '>' | '|' | '?' | '*'
+                    | '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}'
+                    | '\u{2066}'..='\u{206f}'
+            )
+    })
+}
+
+pub(super) fn reserved_device(name: &str) -> bool {
     let first = name.split_once('.').map_or(name, |(first, _)| first);
     let device = first.trim_end_matches(' ').to_ascii_uppercase();
-    !matches!(
+    matches!(
         device.as_str(),
         "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
-    ) && !device
+    ) || device
         .strip_prefix("COM")
         .or_else(|| device.strip_prefix("LPT"))
         .is_some_and(|suffix| {

@@ -23,6 +23,7 @@ import javax.net.ssl.X509TrustManager
 
 internal class LanInvite private constructor(
     internal val endpoint: InetSocketAddress,
+    val isBatch: Boolean,
     private val pin: ByteArray,
     private val token: ByteArray,
 ) {
@@ -58,7 +59,7 @@ internal class LanInvite private constructor(
 
     internal fun writeAuth(output: OutputStream) {
         val packet = ByteBuffer.allocate(5 + HEADER_BYTES + token.size)
-            .put(byteArrayOf(0x53, 0x45, 0x41, 0x4d, 0x02))
+            .put(byteArrayOf(0x53, 0x45, 0x41, 0x4d, if (isBatch) 0x04 else 0x02))
             .put(0x01).putInt(token.size).put(token).array()
         try {
             output.write(packet)
@@ -69,12 +70,18 @@ internal class LanInvite private constructor(
     }
 
     companion object {
-        private const val PREFIX = "SEAM2:"
+        private const val BATCH_PREFIX = "SEAM4:"
+        private const val LEGACY_PREFIX = "SEAM2:"
         private const val FLAGS = Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
 
         fun parse(input: String): LanInvite? {
-            if (input.length != PREFIX.length + 94 || !input.startsWith(PREFIX)) return null
-            val encoded = input.substring(PREFIX.length)
+            val prefix = when {
+                input.startsWith(BATCH_PREFIX) -> BATCH_PREFIX
+                input.startsWith(LEGACY_PREFIX) -> LEGACY_PREFIX
+                else -> return null
+            }
+            if (input.length != prefix.length + 94) return null
+            val encoded = input.substring(prefix.length)
             val bytes = try {
                 Base64.decode(encoded, FLAGS)
             } catch (_: IllegalArgumentException) {
@@ -90,7 +97,7 @@ internal class LanInvite private constructor(
                 val port = ((bytes[4].toInt() and 0xff) shl 8) or (bytes[5].toInt() and 0xff)
                 if (port == 0) return null
                 val endpoint = InetSocketAddress(InetAddress.getByAddress(bytes.copyOfRange(0, 4)), port)
-                return LanInvite(endpoint, bytes.copyOfRange(6, 38), bytes.copyOfRange(38, 70))
+                return LanInvite(endpoint, prefix == BATCH_PREFIX, bytes.copyOfRange(6, 38), bytes.copyOfRange(38, 70))
             } finally {
                 bytes.fill(0)
             }
@@ -124,12 +131,116 @@ internal class LanTransfer(private val invite: LanInvite, private val onStop: (T
         stopLocked(if (totalDeadline != 0L && remainingMs() <= 0) TransferStop.TimedOut else TransferStop.Cancelled)
     }
 
-    fun send(
-        input: InputStream,
-        declaredLength: Long,
-        isPdf: Boolean,
-        displayName: () -> String?,
+    class LegacyItem(val input: InputStream, val length: Long, val isPdf: Boolean, val name: String?)
+
+    data class BatchResult(val result: TransferResult, val committed: Int)
+
+    fun sendLegacy(
+        prepare: () -> LegacyItem,
+        onAccepted: () -> Unit,
         onProgress: (Long) -> Unit,
+    ): TransferResult {
+        check(!invite.isBatch)
+        var item: LegacyItem? = null
+        return runTransfer(prepare = {
+            val prepared = prepare()
+            item = prepared
+            when {
+                prepared.length > TRANSFER_MAX_BYTES -> TransferResult.TooLarge
+                prepared.length < -1 -> TransferResult.Failed
+                else -> null
+            }
+        }) { _, output, response ->
+            val prepared = checkNotNull(item)
+            onAccepted()
+            checkActive()
+            writePacket(output, beginFrame(prepared.isPdf, prepared.length))
+            progress()
+            writeOptionalName(output, { prepared.name }, ::checkActive)
+            pumpTransfer(
+                prepared.input, prepared.length, output, response, ::checkActive, ::progress, ::startEnd, onProgress,
+            )
+        }
+    }
+
+    fun sendBatch(
+        count: Int,
+        queryLength: (Int) -> Long,
+        displayName: (Int) -> String?,
+        openItem: (Int) -> InputStream,
+        closeItem: () -> Unit,
+        onOffered: () -> Unit,
+        onApproved: () -> Unit,
+        onProgress: (Long) -> Unit,
+        onCommitted: (Int) -> Unit,
+    ): BatchResult {
+        check(invite.isBatch)
+        require(count in 1..SEND_BATCH_MAX_ITEMS)
+        val lengths = LongArray(count)
+        var committed = 0
+        val result = runTransfer(prepare = {
+            var reserved = 0L
+            for (index in lengths.indices) {
+                checkActive()
+                val length = queryLength(index)
+                progress()
+                if (length < -1) return@runTransfer TransferResult.Failed
+                if (length > TRANSFER_MAX_BYTES) return@runTransfer TransferResult.TooLarge
+                reserved += if (length == -1L) TRANSFER_MAX_BYTES else length
+                if (reserved > BATCH_MAX_BYTES) return@runTransfer TransferResult.TooLarge
+                lengths[index] = length
+            }
+            null
+        }) { secure, output, response ->
+            val offer = ByteBuffer.allocate(HEADER_BYTES + Long.SIZE_BYTES * count)
+                .put(0x09).putInt(Long.SIZE_BYTES * count)
+            lengths.forEach { offer.putLong(it) }
+            checkActive()
+            writePacket(output, offer.array())
+            setPhase(APPROVAL_WAIT_MS)
+            secure.soTimeout = APPROVAL_WAIT_MS.toInt()
+            onOffered()
+            val reply = ByteArray(HEADER_BYTES)
+            readFrameBytes(response, reply, ::checkActive)
+            if (matchesHeader(reply, 0x07, 0)) return@runTransfer TransferResult.Declined
+            requireHeader(reply, 0x0a, 0)
+            progress()
+            secure.soTimeout = IDLE_MS.toInt()
+            onApproved()
+
+            var committedBytes = 0L
+            for (index in lengths.indices) {
+                checkActive()
+                try {
+                    val name = batchName(displayName(index))
+                    checkActive()
+                    val input = openItem(index)
+                    checkActive()
+                    writePacket(output, ByteBuffer.allocate(HEADER_BYTES + name.size)
+                        .put(0x08).putInt(name.size).put(name).array())
+                    progress()
+                    val item = pumpTransfer(
+                        input, lengths[index], output, response, ::checkActive, ::progress, ::startEnd,
+                        onProgress = { onProgress(committedBytes + it) }, index = index,
+                    )
+                    if (item !is TransferResult.Saved) return@runTransfer item
+                    synchronized(lock) { endStarted = false }
+                    committed++
+                    committedBytes += item.bytes
+                    onCommitted(committed)
+                } finally {
+                    closeItem()
+                }
+                if (committed != count) progress()
+            }
+            TransferResult.Saved(committedBytes)
+        }
+        return BatchResult(result, committed)
+    }
+
+    private fun runTransfer(
+        prepare: () -> TransferResult?,
+        transfer: (SSLSocket, OutputStream, InputStream) -> TransferResult,
     ): TransferResult {
         synchronized(lock) {
             if (started) return TransferResult.Failed
@@ -137,19 +248,19 @@ internal class LanTransfer(private val invite: LanInvite, private val onStop: (T
             stopReason?.let { return TransferResult.Stopped(it, afterEnd = false) }
             val now = SystemClock.elapsedRealtime()
             totalDeadline = now + TOTAL_MS
-            phaseDeadline = now + AUTH_MS
+            phaseDeadline = now + IDLE_MS
         }
         var raw: Socket? = null
         var tls: SSLSocket? = null
         var watchdog: Thread? = null
         try {
-            if (declaredLength > TRANSFER_MAX_BYTES) return complete(TransferResult.TooLarge)
-            if (declaredLength < -1) return complete(TransferResult.Failed)
             val socket = Socket(Proxy.NO_PROXY).also { raw = it }
             watchdog = Thread({ watch(socket) }, "SEAM transfer timeout").apply {
                 isDaemon = true
                 start()
             }
+            prepare()?.let { return complete(it) }
+            setPhase(AUTH_MS)
             val factory = invite.tlsFactory()
             checkActive()
             socket.connect(invite.endpoint, AUTH_MS.toInt())
@@ -172,13 +283,7 @@ internal class LanTransfer(private val invite: LanInvite, private val onStop: (T
             requireHeader(header, 0x02, 0)
             progress()
             secure.soTimeout = IDLE_MS.toInt()
-            checkActive()
-            writePacket(output, beginFrame(isPdf, declaredLength))
-            progress()
-            writeOptionalName(output, displayName, ::checkActive)
-            return complete(pumpTransfer(
-                input, declaredLength, output, response, ::checkActive, ::progress, ::startEnd, onProgress,
-            ))
+            return complete(transfer(secure, output, response))
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: SocketTimeoutException) {
@@ -233,12 +338,12 @@ internal class LanTransfer(private val invite: LanInvite, private val onStop: (T
         if (stopReason != null) throw IOException()
     }
 
-    private fun progress() {
-        synchronized(lock) {
-            checkActiveLocked()
-            phaseDeadline = SystemClock.elapsedRealtime() + IDLE_MS
-            lock.notifyAll()
-        }
+    private fun progress() = setPhase(IDLE_MS)
+
+    private fun setPhase(duration: Long) = synchronized(lock) {
+        checkActiveLocked()
+        phaseDeadline = SystemClock.elapsedRealtime() + duration
+        lock.notifyAll()
     }
 
     private fun watch(socket: Socket) {
@@ -259,6 +364,9 @@ internal class LanTransfer(private val invite: LanInvite, private val onStop: (T
 
 private const val TLS_VERSION = "TLSv1.3"
 private const val AUTH_MS = 5_000L
+private const val APPROVAL_WAIT_MS = 60_000L
+internal const val SEND_BATCH_MAX_ITEMS = 32
+private const val BATCH_MAX_BYTES = 256L * 1024 * 1024
 internal const val IDLE_MS = 10_000L
 internal const val TOTAL_MS = 300_000L
 internal const val TRANSFER_MAX_BYTES = 64L * 1024 * 1024
@@ -306,6 +414,7 @@ internal fun pumpTransfer(
     progress: () -> Unit,
     startEnd: () -> Unit,
     onProgress: (Long) -> Unit,
+    index: Int? = null,
 ): TransferResult {
     val hash = sha256()
     val packet = ByteBuffer.allocate(HEADER_BYTES + CHUNK_BYTES)
@@ -338,19 +447,49 @@ internal fun pumpTransfer(
         onProgress(sent)
     }
     if (declaredLength != -1L && sent != declaredLength) return TransferResult.Failed
-    val receipt = ByteBuffer.allocate(RECEIPT_BYTES).putLong(sent).put(hash.digest()).array()
-    val end = ByteBuffer.allocate(HEADER_BYTES + RECEIPT_BYTES)
-        .put(0x05).putInt(RECEIPT_BYTES).put(receipt).array()
+    val receiptBytes = RECEIPT_BYTES + if (index == null) 0 else Short.SIZE_BYTES
+    val receipt = ByteBuffer.allocate(receiptBytes).apply {
+        if (index != null) putShort(index.toShort())
+    }.putLong(sent).put(hash.digest()).array()
+    val end = ByteBuffer.allocate(HEADER_BYTES + receiptBytes)
+        .put(0x05).putInt(receiptBytes).put(receipt).array()
     startEnd()
     writePacket(output, end)
     progress()
     val header = ByteArray(HEADER_BYTES)
     readFrameBytes(response, header, checkActive, progress)
-    requireHeader(header, 0x06, RECEIPT_BYTES)
+    requireHeader(header, 0x06, receiptBytes)
     progress()
-    val committed = ByteArray(RECEIPT_BYTES)
+    val committed = ByteArray(receiptBytes)
     readFrameBytes(response, committed, checkActive, progress)
     return if (MessageDigest.isEqual(receipt, committed)) TransferResult.Saved(sent) else TransferResult.Unconfirmed
+}
+
+private fun batchName(name: String?): ByteArray {
+    if (name.isNullOrEmpty()) return ByteArray(0)
+    val device = name.substringBefore('.').trimEnd(' ').uppercase()
+    val reserved = device in setOf("CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$") ||
+        (device.startsWith("COM") || device.startsWith("LPT")) && device.length == 4 &&
+        device.last() in "123456789¹²³"
+    if (name.length <= MAX_NAME_BYTES && !reserved && name.first() !in ". " && name.last() !in ". " &&
+        name.none {
+            it in "/\\:\"<>|?*" || it.isISOControl() || it in '\u202a'..'\u202e' || it in '\u2066'..'\u206f' ||
+                it in "\u061c\u200e\u200f"
+        }
+    ) {
+        val encoded = try {
+            name.encodeToByteArray(throwOnInvalidSequence = true)
+        } catch (_: CharacterCodingException) {
+            null
+        }
+        if (encoded != null && encoded.size <= MAX_NAME_BYTES) return encoded
+    }
+    val extension = name.substringAfterLast('.', "")
+    return if (extension.length in 1..16 && extension.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' }) {
+        "file.$extension".encodeToByteArray()
+    } else {
+        "file".encodeToByteArray()
+    }
 }
 
 internal fun readFrameBytes(

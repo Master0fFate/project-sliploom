@@ -1,0 +1,37 @@
+<resources>
+    <string name="trusted_devices">Trusted devices</string>
+    <string name="trusted_hint">Pair devices on the same Wi-Fi to send directly while Sliploom is open.</string>
+    <string name="trusted_unavailable">Trusted devices are unavailable. Connect to Wi-Fi and keep Sliploom open.</string>
+    <string name="trusted_empty">No trusted devices yet.</string>
+    <string name="trusted_device_progress">%1$d of %2$d · Swipe for devices</string>
+    <string name="trusted_review_forget">Review removal</string>
+    <string name="trusted_pair_new">Pair new device</string>
+    <string name="trusted_scan_qr">Scan QR</string>
+    <string name="trusted_preparing">Preparing pairing…</string>
+    <string name="trusted_qr_hint">On the other device, open Trusted devices and tap Scan QR.</string>
+    <string name="trusted_qr_description">Sliploom trusted device pairing QR code</string>
+    <string name="trusted_show_code">Show code</string>
+    <string name="trusted_hide_code">Hide code</string>
+    <string name="trusted_enter_code">Enter pairing code</string>
+    <string name="trusted_code_hint">Enter the SEAM5 pairing code shown on the other device. Keep the code private.</string>
+    <string name="trusted_scan_prompt">Point the camera at the pairing QR in Trusted devices.</string>
+    <string name="trusted_invalid_code">This isn’t a SEAM5 pairing code.</string>
+    <string name="trusted_continue">Continue</string>
+    <string name="trusted_verify_title">Verify this device</string>
+    <string name="trusted_compare">Compare this verification code with the one shown on %1$s. Confirm only if they match.</string>
+    <string name="trusted_receive_permission">Pairing allows this device to send files that Sliploom saves automatically while it’s open. You can remove this permission by forgetting the device.</string>
+    <string name="trusted_confirm_yes">Codes match — allow and pair</string>
+    <string name="trusted_confirm_no">Don’t pair</string>
+    <string name="trusted_pair_failed">Pairing didn’t complete here. If this device appears on the other device, forget it there before trying again.</string>
+    <string name="trusted_pair_interrupted">Pairing was interrupted. Check Trusted devices on both devices before trying again.</string>
+    <string name="trusted_pair_not_confirmed">Pairing was not confirmed.</string>
+    <string name="trusted_pair_expired">Pairing code expired. Start a new pairing to try again.</string>
+    <string name="trusted_paired">Device paired.</string>
+    <string name="trusted_forget">Forget device</string>
+    <string name="trusted_forget_hint">Forget %1$s? It can no longer send files to this device without a new invitation.</string>
+    <string name="trusted_forget_failed">Could not forget this device. Try again.</string>
+    <string name="trusted_choose">Choose trusted device</string>
+    <string name="trusted_not_ready">Device not ready</string>
+    <string name="trusted_send_unavailable">Could not connect to the trusted device. Make sure Sliploom is open there and both devices are on the same Wi-Fi.</string>
+    <string name="trusted_received">File saved. Open Receive history to view it.</string>
+</resources>

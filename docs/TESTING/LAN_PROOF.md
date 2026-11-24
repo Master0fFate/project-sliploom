@@ -1,6 +1,18 @@
 # SEAM receive-once milestone
 
-**Not released.** The [debug build and manual QR walkthrough](../../README.md#build-the-debug-apps-on-windows) describe `43ea485`. The evidence below is from earlier commits; it does not verify the current QR flow or a phone-to-PC LAN transfer.
+**Not released.** The receive-once results below cover the earlier SEAM2 single-file milestone. See the [current batch walkthrough](../../README.md#send-and-receive-batches-over-wi-fi).
+
+## SEAM4 Windows backend smoke
+
+On Windows, two instances of the production Rust Wi-Fi transfer code used a fresh invitation and a private IPv4 interface with synthetic files. One approval accepted three arbitrary files, including an empty file. All three matched their source bytes and SHA-256 digests; an existing name was preserved. An 11-second approval delay did not trip the normal idle timeout. Decline wrote nothing, and cancellation preserved one confirmed file without claiming any later saves. This was a same-host protocol check, not a physical Android-to-Windows transfer.
+
+The production Android sender also ran against the Rust receiver in a host JVM with Android clock and Base64 shims. One approval accepted a text file (16 bytes), a binary file (65,539 bytes) and an empty file. The sender verified three receipts and the receiver saved exactly those files with matching bytes. This exercises the Android sender protocol, not the Android picker, receiver, or device networking.
+
+## Pixel to Windows over Wi-Fi
+
+A physical Pixel 9 Pro XL shared a generated PDF through the Android Sharesheet. The user selected Wi-Fi, scanned a fresh QR from Windows SEAM, and explicitly tapped Send. Android reported “Saved on computer.” The Windows debug build based on `103410d` with the desktop button update reported a confirmed save and returned to Receive once. The empty test folder ended with just `seam-cable-test.pdf` (596 bytes, SHA-256 `39b48a3717afedb8b619231ef9705df28937a5f9b4063b7f3ed8469693eb083f`), matching the source. The PC was listening on its Wi-Fi interface, not the developer cable receiver.
+
+The first scan worked but left a visibly empty manual code field, which obscured the next step. After the Android update, the user repeated the live QR scan and confirmed “Ready to send” before tapping Send. Both apps confirmed the second save as `seam-cable-test (2).pdf`; both files were still 596 bytes and matched the source SHA-256. The manual-code fallback and transient connection state were not exercised. No private invitation was recorded.
 
 ## Windows same-host transfer proof
 
@@ -18,6 +30,6 @@ At `e670c7f`, before the QR UX and later fixes, the unmodified Rust `ReceiveSess
 
 ## Release gates remain open
 
-Release still requires the agreed later features, including discovery and explicit pairing, and real Android-to-desktop transfers on Windows, macOS, and Linux. Native macOS and Linux accessibility and packaging checks are still open. No Mac test environment or release signatures are available here. No new build, transfer, or CI results are attached.
+Release still requires the agreed later features, including discovery and explicit pairing, and platform acceptance beyond the Windows debug PDF smoke. Native macOS and Linux transfers, accessibility, and packaging checks are still open. No Mac test environment or release signatures are available here.
 
 [Master plan §15](../MASTER_PLAN.md#15-release-definition-and-metrics) still applies: only after the agreed product scope is implemented and the required quality checks have run does the independent final audit take place, using GPT-6.2 Astra at `medium` for both the audit and final recheck. If unavailable, the gate stays blocked.

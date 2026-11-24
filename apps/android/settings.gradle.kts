@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "SEAM"
+rootProject.name = "Sliploom"
 include(":app")

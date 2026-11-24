@@ -1,11 +1,11 @@
-# SEAM — Master Product, Design, and Engineering Plan
+# Sliploom — Master Product, Design, and Engineering Plan
 
-> **Working title:** SEAM (not a final brand; name and trademark checks are still required)  
+> **Product name:** Sliploom (formerly SEAM; trademark clearance is still pending)  
 > **Product:** A local-first file transfer app for Android, Windows, macOS, and Linux  
-> **Core interaction:** Android **Share → SEAM → trusted computer → sent**  
+> **Core interaction:** Android **Share → Sliploom → trusted computer → sent**  
 > **Desktop UI:** Rust + **zgx**, using the *design approach* of Zeron  
 > **Android UI:** Kotlin + Jetpack Compose, with a shared Rust engine  
-> **Status:** First-session prototypes implemented. Phone-to-PC transfer is not wired up yet.  
+> **Status:** Android and Windows development builds support Wi-Fi batches and trusted devices. macOS and Linux parity remains unverified.  
 > **Research date:** 2026-11-23  
 > **Document version:** 0.2
 
@@ -40,7 +40,7 @@ This file is the project control center. Keep it at `docs/MASTER_PLAN.md` after 
 ### Project at a glance
 
 ```text
-SEAM
+Sliploom
 ├── 00 Product and research               [research done; product work pending]
 ├── 01 Engineering foundation             [in progress]
 ├── 02 Core network transfer              [ ]
@@ -61,7 +61,8 @@ SEAM
 - [x] Confirm Android's Share intents, share targets, and Storage Access Framework from Android developer documentation.
 - [x] Identify the Android foreground-transfer lifetime risk and the USB/MTP limitation.
 - [ ] Verify a working zgx desktop app on **each** target OS, with our build toolchain and a pinned commit.
-- [ ] Confirm the name and visual identity.
+- [x] Select the Sliploom name. Keep the existing visual identity.
+- [ ] Complete trademark clearance before release.
 - [ ] Build and test the first complete Android-to-desktop transfer.
 
 ---
@@ -169,7 +170,7 @@ Android first launch
 ```text
 Gallery / Files / browser / chat / document app
   └── Share
-      └── SEAM
+      └── Sliploom
           ├── One available favorite → Send (or Direct Share to that device)
           ├── Several devices → Tap target → Send
           └── No device → Retry / network help / queue with user approval
@@ -188,22 +189,23 @@ Gallery / Files / browser / chat / document app
 
 **Done when:** From a third-party Android app, a user shares a 25 MB file to a paired computer without opening an unrelated file browser.
 
-### Journey C — Desktop to Android
+### Journey C — Receive on Android
+
+On Android, keep the centered card and put tappable **Send** and **Receive** labels above it. Swiping changes pages, but no gesture alone opens a listener, starts discovery, or requests permission. A third-party Share intent always opens the existing Send flow. On Receive, one **Receive once** action opens a bottom sheet; the main card and its layout stay in place. The sheet shows the save destination, the QR, and a way to stop. A completed receive replaces the QR with the result and **Open file**. Use the same sheet for connection errors and expiry rather than adding permanent fields to the card.
 
 ```text
-Desktop window
-  └── Drop a file / Choose files
-      └── Choose paired Android device
-          └── Android receives consent / save destination as required
-              └── Transfer and verify
+Receiving Android → Receive once → Show QR
+  Sending PC → Send → Choose file → Scan QR or Enter code → Send
+  Sending Android → Share → Sliploom → Scan QR → Send
 ```
 
-- [ ] Build after the Android → desktop path is stable.
-- [ ] Use Android's supported document/media APIs to save received files.
-- [ ] Require explicit Android approval or a well-scoped trusted-receiving setting.
-- [ ] Test Android background limits and storage behavior.
+The initial path is direct over the same reachable Wi-Fi, with no internet service or Bluetooth requirement. The receiving phone shows the QR for both sender types. A PC without a camera can enter the one-time code from the sheet. On desktop, add a quiet **Send** mode that swaps the existing transfer card, leaving Recent files and window size unchanged. Reading a QR or entering its code does not send the file.
 
-**Done when:** Desktop → Android works without broad storage permissions.
+**Receive once** authorizes one bounded batch from the holder of the expiring QR. The receiver generates a fresh invitation and binds only to its selected local interface. The one-time QR is not durable pairing; [Trusted devices](PROTOCOL.md#trusted-devices-seam5) uses separate credentials. Close the receive session on dismissal, network change, or leaving the foreground; show expiry and allow an explicit restart.
+
+Save the first implementation in an Android-managed inbox using private staging, verification, and no-overwrite publication before confirmation. Use Android's document/media APIs for an explicit export; do not require broad file access or report a public save before it happens. Retest both directions on real devices.
+
+**Done when:** A PC and another Android phone can each send a file to Android over reachable Wi-Fi; the received bytes match, confirmation follows publication, and the current Android Share flow still works.
 
 ### Journey D — Failure and recovery
 
@@ -267,7 +269,7 @@ The proposed app uses the **feel** of Zeron's native glass surfaces, black-and-w
 
 **Avoid:** giant glowing buttons, neon gradients, decorative 3D scenes, constant motion, fake blur on text, floating cards everywhere, long settings screens.
 
-### 3.4 Design token proposal (custom to SEAM)
+### 3.4 Design token proposal (custom to Sliploom)
 
 These are **starting values to test**, not official Zeron token values.
 
@@ -339,7 +341,7 @@ UI COMPONENTS
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│  ◌ SEAM                                    ─   □   ×             │
+│  ◌ SLIPLOOM                                ─   □   ×             │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │          Receive files                                          │
@@ -380,7 +382,7 @@ UI COMPONENTS
 
 ```text
 ┌────────────────────────────┐
-│  Send with SEAM            │
+│  Send with Sliploom        │
 │  3 files · 18.4 MB         │
 │                            │
 │  Trusted computers         │
@@ -892,15 +894,17 @@ Android app
 
 ## 10. USB and wired transfer: separate research track
 
-**Wired experience:** With the desktop app open and the cable connected, choose **Share → SEAM** on Android. The desktop asks **Accept** or **Decline**. No QR code, invitation, or extra send screen. Wi-Fi is a separate choice, not an automatic fallback.
+**Wired experience:** With the desktop app open and the cable connected, choose **Share → Sliploom** on Android. The desktop asks **Accept** or **Decline**. No QR code, invitation, or extra send screen. Wi-Fi is a separate choice, not an automatic fallback.
 
 The Windows debug build implements this flow over an already-authorized USB debugging connection. On a Pixel 9 Pro XL (API 37), QA verified that Decline saved nothing and Accept saved the 596-byte PDF with matching SHA-256 (`03522f0`). This is not consumer USB support. Android MTP, USB tethering, ADB, and USB accessory modes have different platform and permission requirements.
+
+On the Windows desktop button update (working tree based on `103410d`), physical USB QA repeated three Android Sharesheet offers from the Pixel 9 Pro XL. The PC showed one prompt with a centered white **Accept**, **Decline** underneath, and no QR. Decline left the receive folder unchanged. Two approvals saved `seam-cable-test.pdf` and `seam-cable-test (2).pdf`, each 596 bytes with SHA-256 `39b48a3717afedb8b619231ef9705df28937a5f9b4063b7f3ed8469693eb083f`. Neither offer saved before approval, and the second did not alter the first. This recheck covers the debug USB flow only.
 
 ### Candidate evaluation
 
 | Method | Android Share → desktop directly? | Consumer-friendly? | Plan |
 |---|---|---|---|
-| MTP/PTP | **Not by itself**; desktop primarily browses phone storage | Common | Separate desktop file-browser feature if justified |
+| MTP | **No**; supports Windows → Android only in Sliploom | Common | Windows Send checks for USB File transfer and writes to the phone’s Download folder. A 73-byte file sent to the Pixel 9 Pro XL matched the source SHA-256 on readback. PTP is not supported. |
 | USB tethering / USB networking | **Possible** if both devices receive a usable network route | Depends on phone/OS setup | Best first wired feasibility spike |
 | ADB reverse/forward | Technically useful for development | **No**, requires debugging | Dev-only testing tool |
 | Android Open Accessory / USB host/gadget variants | Hardware/OS-dependent | Uncertain | Research only, no universal support claim |
@@ -1039,7 +1043,7 @@ The targets are goals, not observed performance claims.
 - [ ] Transfer shared photo and PDF with verification.
 - [ ] Handle cancellation and one meaningful error state.
 
-**Done when:** A user selects Share in a real Android third-party app, chooses SEAM, and the correct file appears on the PC.
+**Done when:** A user selects Share in a real Android third-party app, chooses Sliploom, and the correct file appears on the PC.
 
 ### Phase 3 — Discovery, pairing, and trust
 
@@ -1080,7 +1084,7 @@ The targets are goals, not observed performance claims.
 - [ ] Add progress and cancel action.
 - [ ] Test portrait, landscape, large fonts, and accessibility.
 
-**Done when:** A repeat user can send to a preferred trusted desktop in one or two taps after choosing SEAM in the Share menu.
+**Done when:** A repeat user can send to a preferred trusted desktop in one or two taps after choosing Sliploom in the Share menu.
 
 ### Phase 6 — Three desktop OS releases
 
@@ -1094,18 +1098,17 @@ The targets are goals, not observed performance claims.
 
 **Done when:** A non-developer can install, pair, and receive on each advertised OS.
 
-### Phase 7 — Desktop → Android and reliability
+### Phase 7 — Receive on Android and reliability
 
-**Goal:** Two-way sharing and robust recovery.
+**Goal:** Two-way sharing without growing the main cards.
 
-- [ ] Desktop drop zone and file picker.
-- [ ] Android incoming-file consent and safe save with SAF/MediaStore.
-- [ ] Queue multiple files, show per-file outcome.
-- [ ] Define and implement safe retry or resume where feasible.
-- [ ] Test all failure scenarios in Section 2.
-- [ ] Add transfer history that users can clear.
+- [ ] Prove the QR LAN receiver on Android 10+ with the existing sender. Verify TLS 1.3 server support, generation of an ephemeral P-256 certificate with the correct IP SAN, and availability of the shared receiver on Android. If reusing the Rust receiver, install/check the Android Rust target against the existing NDK and keep the platform bridge narrow; if using Kotlin, use a maintained certificate provider and check compatibility against the existing receiver contract. Verify the selected Android Wi-Fi interface, permission denial and safe cleanup. The Android build currently targets SDK 36; cover the [Android 17 local-network permission](https://developer.android.com/privacy-and-security/local-network-permission) when targeting SDK 37 or higher.
+- [ ] Connect the two-page Android UI and receive sheet to a working foreground session. First prove Android-to-Android on a reachable network, then add a Windows sender with a native picker, code entry and optional webcam QR scan. Check close, rotation, expiry, cancellation, collisions and no regression of the existing phone-to-PC send.
+- [ ] Evaluate a user-enabled hotspot before adding routerless discovery. If it is too cumbersome, trial [Nearby Connections](https://developers.google.com/nearby/connections/overview) for Android-to-Android: it can use Bluetooth, BLE, and Wi-Fi offline, but the SDK depends on Google Play services and collects usage analytics. Require peer verification, and request Nearby access only when a user explicitly chooses Nearby. For a Play-services-free path, evaluate [Wi-Fi Aware](https://developer.android.com/develop/connectivity/wifi/wifi-aware) only where both devices support it and it is available. Keep LAN/QR as the explicit fallback. Neither option is the current developer cable transport.
+- [ ] Verify bounded batches, per-file outcomes and safe recovery alongside [trusted devices](PROTOCOL.md#trusted-devices-seam5). Keep verification, revocation and automatic receive authorization separate.
+- [ ] Test the failure scenarios in Section 2 and make the history clearable.
 
-**Done when:** Bidirectional transfers work and common interruptions do not cause silent data loss.
+**Done when:** Bidirectional transfers work and common interruptions do not cause silent data loss. Nearby and reverse USB are not prerequisites for the first LAN milestone.
 
 ### Phase 8 — Public beta
 
@@ -1211,7 +1214,7 @@ After the agreed release scope is implemented and the quality checks above have 
 
 ### Metrics to collect (with privacy protections)
 
-- Time from tapping **Share → SEAM** to receiver save confirmation.
+- Time from tapping **Share → Sliploom** to receiver save confirmation.
 - Number of taps required after initial pairing.
 - Pairing success rate during controlled testing.
 - Transfer completion rate under defined Wi-Fi conditions.
@@ -1238,7 +1241,7 @@ Use this table for quick state, then create a detailed ADR in `docs/DECISIONS/` 
 | D-007 | Unknown devices require approval | **Proposed** | Explicit user trust |
 | D-008 | Never overwrite incoming files by default | **Proposed** | Prevent data loss |
 | D-009 | USB is a separate later-phase track | **Proposed** | Consumer setup differs by device and OS |
-| D-010 | “SEAM” is a temporary name | **Open** | Branding and trademark review required |
+| D-010 | Use the Sliploom display name | **Decided** | Keep SEAM protocol identifiers and existing storage. Trademark clearance remains open. |
 | D-011 | Desktop receiver process lifetime | **Open** | Decide agent, service, IPC, and autostart policy by OS |
 | D-012 | License, release channels, architectures | **Open** | Must be selected before beta |
 
@@ -1306,7 +1309,7 @@ If starting implementation today, do only the items below before adding visual p
 
 ### Definition of the first visible success
 
-> Share a photo on an Android phone → choose SEAM → enter or select a test receiver → receive the exact photo on a desktop → verify matching file hash.  
+> Share a photo on an Android phone → choose Sliploom → enter or select a test receiver → receive the exact photo on a desktop → verify matching file hash.  
 > No cloud, no account, no fake progress. The desktop UI can still be plain at this point.
 
 ---

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Sliploom
+Comment=Send and receive files on your local network
+Exec=seam-desktop
+Terminal=false
+Categories=Network;FileTransfer;

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>org.projectseam.sliploom</string>
+    <key>CFBundleName</key>
+    <string>Sliploom</string>
+    <key>CFBundleExecutable</key>
+    <string>seam-desktop</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Sliploom connects to nearby devices on your local network to send and receive files.</string>
+</dict>
+</plist>

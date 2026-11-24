@@ -1,25 +1,34 @@
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use receiver_service::lan::Receipt;
 use receiver_service::lan::cable::{CableReceiver, Offer};
 use zgx::compose::prelude::*;
 use zgx::reactive::Signal;
 use zgx::semantics::Live;
-use zgx_desktop::{TaskSpawner, WindowContext};
+use zgx_desktop::{FileDialogs, TaskSpawner, WindowContext};
 
 use crate::adb::AdbBridge;
-use crate::material::{action, headline, metadata, secondary};
+use crate::history::History;
+use crate::material::{
+    headline, metadata, primary_action, quiet_action, receive_actions, receive_primary,
+};
+use crate::{destination_label, pick_destination};
 
 const TICK: Duration = Duration::from_millis(100);
 const DECISION_TIME: Duration = Duration::from_secs(30);
 const BRIDGE_CHECK: Duration = Duration::from_secs(5);
-const WAITING: &str = "Cable ready. On your phone, use Share → SEAM.";
+const WAITING: &str = "Cable ready. On your phone, use Share → Sliploom.";
+const IDLE: u8 = 0;
+const BUSY: u8 = 1;
+const PAUSED: u8 = 2;
 
 #[derive(Clone)]
 struct Prompt {
@@ -54,9 +63,10 @@ impl ReceiptOutcome {
 
 enum Event {
     Status(String),
-    Folder(PathBuf),
+    DefaultFolder(PathBuf),
+    Busy(bool),
     Prompt(Prompt),
-    Receipt(ReceiptOutcome),
+    Receipt(Receipt),
 }
 
 #[derive(Default, Clone)]
@@ -64,10 +74,27 @@ pub(crate) struct Workers(Rc<RefCell<Option<Worker>>>);
 
 struct Worker {
     cancel: Arc<AtomicBool>,
+    phase: Arc<AtomicU8>,
     handle: JoinHandle<()>,
 }
 
 impl Workers {
+    fn pause_idle(&self) -> bool {
+        let worker = self.0.borrow();
+        let Some(worker) = worker.as_ref() else {
+            return true;
+        };
+        if worker
+            .phase
+            .compare_exchange(IDLE, PAUSED, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        worker.cancel.store(true, Ordering::Release);
+        true
+    }
+
     fn cancel(&self) {
         if let Some(worker) = self.0.borrow().as_ref() {
             worker.cancel.store(true, Ordering::Release);
@@ -87,47 +114,103 @@ pub(crate) struct Cable {
     enabled: Signal<bool>,
     status: Signal<String>,
     folder: Signal<Option<PathBuf>>,
+    default_folder: Signal<Option<PathBuf>>,
+    busy: Signal<bool>,
+    picking: Signal<bool>,
+    folder_error: Signal<String>,
+    dialogs: FileDialogs,
     prompt: Signal<Option<Prompt>>,
     receipt: Signal<Option<ReceiptOutcome>>,
+    history: History,
     retry: Signal<bool>,
     workers: Workers,
     tasks: TaskSpawner,
 }
 
 impl Cable {
-    pub(crate) fn new(cx: &mut WindowContext, workers: Workers) -> Self {
+    pub(crate) fn new(
+        cx: &mut WindowContext,
+        workers: Workers,
+        history: History,
+        folder: Signal<Option<PathBuf>>,
+        default_folder: Signal<Option<PathBuf>>,
+    ) -> Self {
         let runtime = &cx.ui.runtime;
         let cable = Self {
             enabled: runtime.signal(true),
             status: runtime.signal(String::new()),
-            folder: runtime.signal(None),
+            folder,
+            default_folder,
+            busy: runtime.signal(false),
+            picking: runtime.signal(false),
+            folder_error: runtime.signal(String::new()),
+            dialogs: cx.dialogs.clone(),
             prompt: runtime.signal(None),
             receipt: runtime.signal(None),
+            history,
             retry: runtime.signal(false),
             workers,
             tasks: cx.tasks.clone(),
         };
         let close = cable.clone();
-        cx.on_closed(move || close.enable(false));
+        cx.on_closed(move || {
+            close.enabled.set(false);
+            close.workers.cancel();
+        });
         cable.start();
         cable
     }
 
-    pub(crate) fn enable(&self, enabled: bool) {
+    pub(crate) fn switch_blocked(&self) -> impl Fn() -> bool + use<> {
+        let busy = self.busy.clone();
+        let picking = self.picking.clone();
+        move || busy.get() || picking.get()
+    }
+
+    pub(crate) fn switch_mode(&self, enabled: bool) -> bool {
+        if self.picking.get() || (!enabled && !self.workers.pause_idle()) {
+            return false;
+        }
         self.enabled.set(enabled);
         if enabled {
             self.start();
-        } else {
-            self.workers.cancel();
-            self.prompt.set(None);
-            self.folder.set(None);
-            self.retry.set(false);
-            self.status.set("Preparing cable receive…".into());
+        }
+        true
+    }
+
+    pub(crate) async fn wait_for_worker(&self) {
+        while self.workers.0.borrow().is_some() {
+            zgx::timer::sleep(TICK).await;
         }
     }
 
+    fn choose(&self) {
+        if !self.enabled.get() || (self.switch_blocked())() || !self.workers.pause_idle() {
+            return;
+        }
+        self.picking.set(true);
+        self.folder_error.set(String::new());
+        self.status.set("Choosing a save folder…".into());
+        let ui = self.clone();
+        self.tasks.spawn(async move {
+            ui.wait_for_worker().await;
+            let current = ui.folder.get().or_else(|| ui.default_folder.get());
+            match pick_destination(ui.dialogs.clone(), current).await {
+                Ok(Some(path)) => {
+                    ui.folder.set(Some(path));
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    ui.folder_error.set(message.into());
+                }
+            }
+            ui.picking.set(false);
+            ui.start();
+        });
+    }
+
     fn start(&self) {
-        if !self.enabled.get() || self.workers.0.borrow().is_some() {
+        if !self.enabled.get() || self.picking.get() || self.workers.0.borrow().is_some() {
             return;
         }
         self.retry.set(false);
@@ -135,13 +218,17 @@ impl Cable {
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
+        let phase = Arc::new(AtomicU8::new(IDLE));
+        let worker_phase = phase.clone();
+        let folder = self.folder.get();
         let handle = thread::Builder::new()
             .name("seam-cable".into())
-            .spawn(move || run(&flag, &tx));
+            .spawn(move || run(&flag, &worker_phase, &tx, folder.as_deref()));
         match handle {
             Ok(handle) => {
                 *self.workers.0.borrow_mut() = Some(Worker {
                     cancel: cancel.clone(),
+                    phase,
                     handle,
                 });
             }
@@ -155,16 +242,18 @@ impl Cable {
         self.tasks.spawn(async move {
             ui.read_events(&cancel, rx).await;
             loop {
-                if ui
-                    .workers
-                    .0
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|worker| worker.handle.is_finished())
-                {
-                    let worker = ui.workers.0.borrow_mut().take().unwrap();
+                let finished = {
+                    let mut slot = ui.workers.0.borrow_mut();
+                    match slot.as_ref() {
+                        Some(worker) if worker.handle.is_finished() => slot.take(),
+                        Some(_) => None,
+                        None => return,
+                    }
+                };
+                if let Some(worker) = finished {
                     let failed = worker.handle.join().is_err();
                     ui.prompt.set(None);
+                    ui.busy.set(false);
                     if ui.enabled.get() {
                         if stopped(&cancel) {
                             ui.start();
@@ -183,24 +272,36 @@ impl Cable {
     }
 
     async fn read_events(&self, cancel: &AtomicBool, rx: Receiver<Event>) {
-        while !stopped(cancel) {
+        loop {
             match rx.try_recv() {
+                Ok(Event::Receipt(receipt)) => {
+                    let outcome = if receipt.confirmed {
+                        ReceiptOutcome::Saved(receipt.bytes)
+                    } else {
+                        ReceiptOutcome::SavedWithUncertainConfirmation(receipt.bytes)
+                    };
+                    self.history.record(receipt.path, receipt.bytes);
+                    self.receipt.set(Some(outcome));
+                    if !stopped(cancel) {
+                        self.status.set(WAITING.into());
+                    }
+                }
+                Ok(_) if stopped(cancel) => {}
                 Ok(Event::Status(message)) => {
                     self.prompt.set(None);
                     self.status.set(message);
                 }
-                Ok(Event::Folder(path)) => {
-                    self.folder.set(Some(path));
+                Ok(Event::DefaultFolder(path)) => {
+                    self.default_folder.set(Some(path));
+                }
+                Ok(Event::Busy(busy)) => {
+                    self.busy.set(busy);
                 }
                 Ok(Event::Prompt(prompt)) if prompt.deadline > Instant::now() => {
                     self.prompt.set(Some(prompt));
                     self.status.set(String::new());
                 }
                 Ok(Event::Prompt(_)) => {}
-                Ok(Event::Receipt(receipt)) => {
-                    self.status.set(WAITING.into());
-                    self.receipt.set(Some(receipt));
-                }
                 Err(TryRecvError::Disconnected) => return,
                 Err(TryRecvError::Empty) => zgx::timer::sleep(TICK).await,
             }
@@ -222,105 +323,139 @@ impl Cable {
         }
     }
 
+    pub(crate) fn heading(&self) -> View {
+        let prompt = self.prompt.clone();
+        switch(
+            move || prompt.with(|value| value.as_ref().map(|offer| offer.is_pdf)),
+            |offer, _| match offer {
+                Some(true) => headline("Receive PDF?").live(Live::Assertive),
+                Some(false) => headline("Receive image?").live(Live::Assertive),
+                None => headline("Receive by cable"),
+            },
+        )
+        .display_contents()
+    }
+
+    pub(crate) fn has_status_update(&self) -> bool {
+        self.retry.get()
+            || !self.folder_error.with(String::is_empty)
+            || self.receipt.with(Option::is_some)
+    }
+
+    pub(crate) fn status_view(&self) -> View {
+        let status = self.status.clone();
+        let receipt = self.receipt.clone();
+        let error = self.folder_error.clone();
+        let error_text = error.clone();
+        column()
+            .gap(8.)
+            .child(
+                metadata(text_signal(move || {
+                    status.with(|message| {
+                        if message.is_empty() {
+                            "Waiting for approval.".into()
+                        } else {
+                            message.clone()
+                        }
+                    })
+                }))
+                .live(Live::Polite),
+            )
+            .child_when(
+                move || receipt.get(),
+                |receipt, _| metadata(text(receipt.message())).live(Live::Polite),
+            )
+            .child_when(
+                move || (!error.with(String::is_empty)).then_some(()),
+                move |(), _| {
+                    let error = error_text.clone();
+                    metadata(text_signal(move || error.get())).live(Live::Polite)
+                },
+            )
+    }
+
     pub(crate) fn view(&self) -> View {
         let prompt = self.prompt.clone();
         let ui = self.clone();
-        let status = self.status.clone();
         let retry = self.retry.clone();
-        let folder = self.folder.clone();
+
         switch(
             move || prompt.get(),
             move |prompt, _| {
                 if let Some(prompt) = prompt {
                     return ui.prompt_view(prompt);
                 }
-                let status = status.clone();
-                let receipt = ui.receipt.clone();
                 let actions = ui.clone();
+                let chooser = ui.clone();
                 let retry = retry.clone();
-                let folder = folder.clone();
                 column()
-                    .gap(16.)
-                    .child(
-                        column()
-                            .gap(8.)
-                            .child(headline("Receive by cable"))
-                            .child(metadata(text_signal(move || status.get())).live(Live::Polite))
-                            .child_when(
-                                move || receipt.get(),
-                                |receipt, _| metadata(text(receipt.message())).live(Live::Polite),
-                            ),
-                    )
-                    .child(switch(
-                        move || (retry.get(), folder.with(Option::is_some)),
-                        move |(retry, has_folder), _| {
-                            let retry_ui = actions.clone();
-                            let folder_ui = actions.clone();
-                            row()
-                                .gap(8.)
-                                .when(retry, |row| {
-                                    row.child(
-                                        secondary("Retry cable").on_click(move || retry_ui.start()),
-                                    )
-                                })
-                                .when(has_folder, |row| {
-                                    row.child(secondary("Open folder").on_click(move || {
-                                        if let Some(path) = folder_ui.folder.get() {
+                    .gap(8.)
+                    .child(receive_actions(
+                        switch(
+                            move || retry.get(),
+                            move |retry, _| {
+                                let ui = actions.clone();
+                                if retry {
+                                    receive_primary("Retry cable")
+                                        .disabled_when(ui.switch_blocked())
+                                        .on_click(move || ui.start())
+                                } else {
+                                    let available = ui.clone();
+                                    receive_primary("Open folder")
+                                        .disabled_when(move || {
+                                            (available.switch_blocked())()
+                                                || (available.folder.get().is_none()
+                                                    && available.default_folder.get().is_none())
+                                        })
+                                        .on_click(move || {
+                                            let selected = ui.folder.get();
+                                            let expected = selected
+                                                .clone()
+                                                .or_else(|| ui.default_folder.get());
                                             let _ = thread::Builder::new()
                                                 .name("seam-open-folder".into())
                                                 .spawn(move || {
-                                                    if let Ok(folder) = private_folder::open(false)
-                                                        && folder.path == path
+                                                    if let Ok(folder) =
+                                                        open_destination(selected.as_deref(), false)
+                                                        && expected.as_ref() == Some(&folder.path)
                                                     {
                                                         folder.explore();
                                                     }
                                                 });
-                                        }
-                                    }))
-                                })
-                        },
+                                        })
+                                }
+                            },
+                        )
+                        .display_contents(),
+                        quiet_action(text("Choose save folder"))
+                            .disabled_when(ui.switch_blocked())
+                            .on_click(move || chooser.choose()),
+                    ))
+                    .child(destination_label(
+                        ui.folder.clone(),
+                        ui.default_folder.clone(),
                     ))
             },
         )
+        .display_contents()
     }
 
     fn prompt_view(&self, prompt: Prompt) -> View {
         let decline = self.clone();
         let accept = self.clone();
-        let question = if prompt.is_pdf {
-            "Receive PDF?"
-        } else {
-            "Receive image?"
-        };
         let detail = prompt.bytes.map_or_else(
             || "Cable share · Size unknown".into(),
             |bytes| format!("Cable share · {bytes} bytes"),
         );
         let no = prompt.clone();
-        column()
-            .gap(24.)
-            .child(
-                column()
-                    .gap(8.)
-                    .child(headline(question).live(Live::Assertive))
-                    .child(metadata(text(detail))),
-            )
-            .child(
-                row()
-                    .gap(8.)
-                    .child(
-                        secondary("Decline")
-                            .grow()
-                            .h(48.)
-                            .on_click(move || decline.decide(&no, false)),
-                    )
-                    .child(
-                        action(text("Accept"), true)
-                            .grow()
-                            .h(48.)
-                            .on_click(move || accept.decide(&prompt, true)),
-                    ),
-            )
+        column().gap(16.).child(metadata(text(detail))).child(
+            column()
+                .max_w(304.)
+                .items_center()
+                .gap(8.)
+                .child(primary_action("Accept").on_click(move || accept.decide(&prompt, true)))
+                .child(quiet_action(text("Decline")).on_click(move || decline.decide(&no, false))),
+        )
     }
 }
 
@@ -343,15 +478,33 @@ fn pause(cancel: &AtomicBool, duration: Duration) {
     }
 }
 
-fn run(cancel: &AtomicBool, tx: &Sender<Event>) {
-    let Ok(folder) = private_folder::open(true) else {
+pub(crate) use private_folder::Folder;
+
+pub(crate) fn open_destination(
+    selected: Option<&Path>,
+    create_default: bool,
+) -> io::Result<Folder> {
+    match selected {
+        Some(path) => private_folder::chosen(path),
+        None => private_folder::open(create_default),
+    }
+}
+
+fn run(cancel: &AtomicBool, phase: &AtomicU8, tx: &Sender<Event>, selected: Option<&Path>) {
+    let Ok(folder) = open_destination(selected, true) else {
         status(
             tx,
-            "Can’t use the private SEAM folder. Cable receive is off.",
+            if selected.is_some() {
+                "Can’t use this save folder. Choose another folder."
+            } else {
+                "Can’t use the default save folder. Cable receive is off."
+            },
         );
         return;
     };
-    let _ = tx.send(Event::Folder(folder.path.clone()));
+    if selected.is_none() {
+        let _ = tx.send(Event::DefaultFolder(folder.path.clone()));
+    }
     let retry_delays = [0, 1, 2, 4, 8, 12, 16];
     let mut failures = 0;
     while let Some(&delay) = retry_delays.get(failures) {
@@ -360,10 +513,7 @@ fn run(cancel: &AtomicBool, tx: &Sender<Event>) {
             return;
         }
         let Ok(receiver) = CableReceiver::bind(&folder.path) else {
-            status(
-                tx,
-                "Couldn’t start cable receive in the private SEAM folder.",
-            );
+            status(tx, "Couldn’t start cable receive in the save folder.");
             return;
         };
         let Ok(bridge) = AdbBridge::open(receiver.port()) else {
@@ -379,7 +529,7 @@ fn run(cancel: &AtomicBool, tx: &Sender<Event>) {
         let connection_cancel = AtomicBool::new(false);
         thread::scope(|scope| {
             let connection = &connection_cancel;
-            let receiving = scope.spawn(move || receive(receiver, cancel, connection, tx));
+            let receiving = scope.spawn(move || receive(receiver, cancel, phase, connection, tx));
             let mut next_check = Instant::now() + BRIDGE_CHECK;
             while !stopped(cancel) && !receiving.is_finished() {
                 if Instant::now() >= next_check {
@@ -406,16 +556,26 @@ fn run(cancel: &AtomicBool, tx: &Sender<Event>) {
 fn receive(
     receiver: CableReceiver,
     cancel: &AtomicBool,
+    phase: &AtomicU8,
     connection: &AtomicBool,
     tx: &Sender<Event>,
 ) {
     while !stopped(cancel) && !stopped(connection) {
         let mut outcome = "No file was saved. Share again from the phone to retry.";
         let mut next_progress = Instant::now();
+        let mut active = false;
         let result = receiver.receive_next(
             cancel,
             connection,
             |offer| {
+                if phase
+                    .compare_exchange(IDLE, BUSY, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    return false;
+                }
+                active = true;
+                let _ = tx.send(Event::Busy(true));
                 let (accepted, message) = approve(offer, cancel, connection, tx);
                 outcome = message;
                 if accepted {
@@ -430,14 +590,13 @@ fn receive(
                 }
             },
         );
+        if active {
+            phase.store(IDLE, Ordering::Release);
+            let _ = tx.send(Event::Busy(false));
+        }
         match result {
             Ok(Some(receipt)) => {
-                let outcome = if receipt.confirmed {
-                    ReceiptOutcome::Saved(receipt.bytes)
-                } else {
-                    ReceiptOutcome::SavedWithUncertainConfirmation(receipt.bytes)
-                };
-                let _ = tx.send(Event::Receipt(outcome));
+                let _ = tx.send(Event::Receipt(receipt));
             }
             _ if stopped(cancel) || stopped(connection) => return,
             Ok(None) => status(tx, outcome),
@@ -554,6 +713,7 @@ mod private_folder {
             needed: *mut u32,
         ) -> i32;
         fn ConvertSidToStringSidW(sid: Ptr, text: *mut *mut u16) -> i32;
+        fn ConvertStringSidToSidW(text: *const u16, sid: *mut Ptr) -> i32;
         fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
             text: *const u16,
             revision: u32,
@@ -584,6 +744,7 @@ mod private_folder {
             revision: *mut u32,
         ) -> i32;
         fn EqualSid(first: Ptr, second: Ptr) -> i32;
+        fn IsWellKnownSid(sid: Ptr, kind: u32) -> i32;
         fn GetAce(acl: *mut Acl, index: u32, ace: *mut *mut AceHeader) -> i32;
     }
 
@@ -592,6 +753,16 @@ mod private_folder {
         fn GetCurrentProcess() -> Ptr;
         fn LocalFree(memory: Ptr) -> Ptr;
         fn GetDriveTypeW(root: *const u16) -> u32;
+        fn GetVolumeInformationW(
+            root: *const u16,
+            label: *mut u16,
+            label_size: u32,
+            serial: *mut u32,
+            max_component: *mut u32,
+            flags: *mut u32,
+            filesystem: *mut u16,
+            filesystem_size: u32,
+        ) -> i32;
         fn CreateDirectoryW(path: *const u16, attributes: *const SecurityAttributes) -> i32;
     }
 
@@ -628,8 +799,8 @@ mod private_folder {
         }
     }
 
-    pub(super) struct Folder {
-        pub(super) path: PathBuf,
+    pub(crate) struct Folder {
+        pub(crate) path: PathBuf,
         _directories: Vec<File>,
     }
 
@@ -698,6 +869,212 @@ mod private_folder {
             path,
             _directories: directories,
         })
+    }
+
+    pub(super) fn chosen(input: &Path) -> io::Result<Folder> {
+        let input = native(input)?;
+        let profile = native(&known_folder(&PROFILE)?)?;
+        let profile = normalized(Path::new(&profile))?;
+        let root = wide(OsStr::new(&input[..3]));
+        let mut flags = 0;
+        unsafe {
+            if GetDriveTypeW(root.as_ptr()) != 3 {
+                return Err(invalid());
+            }
+            check(GetVolumeInformationW(
+                root.as_ptr(),
+                null_mut(),
+                0,
+                null_mut(),
+                null_mut(),
+                &mut flags,
+                null_mut(),
+                0,
+            ))?;
+        }
+        if flags & 8 == 0 {
+            return Err(invalid());
+        }
+        let expected = private_descriptor()?;
+        let path = Path::new(&input);
+        let mut parents = path.ancestors().collect::<Vec<_>>();
+        parents.reverse();
+        let mut directories = Vec::with_capacity(parents.len());
+        let mut inside_profile = false;
+        for parent in parents {
+            let handle = lock_directory(parent, true)?;
+            let canonical = normalized(parent)?;
+            let final_dir = parent == path;
+            if final_dir && !inside_profile {
+                return Err(invalid());
+            }
+            inside_profile |= canonical == profile;
+            check_chosen_acl(
+                &handle,
+                &expected,
+                final_dir,
+                inside_profile,
+                parent.parent().is_none(),
+            )?;
+            directories.push(handle);
+            if final_dir {
+                let path = PathBuf::from(canonical);
+                native(&path)?;
+                return Ok(Folder {
+                    path,
+                    _directories: directories,
+                });
+            }
+        }
+        Err(invalid())
+    }
+
+    fn normalized(path: &Path) -> io::Result<String> {
+        let canonical = std::fs::canonicalize(path)?;
+        let canonical = canonical
+            .to_str()
+            .and_then(|s| s.strip_prefix(r"\\?\"))
+            .ok_or_else(invalid)?;
+        if !canonical.eq_ignore_ascii_case(path.to_str().ok_or_else(invalid)?) {
+            return Err(invalid());
+        }
+        Ok(canonical.into())
+    }
+
+    fn native(path: &Path) -> io::Result<String> {
+        let path = path.to_str().ok_or_else(invalid)?;
+        let bytes = path.as_bytes();
+        if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || &bytes[1..3] != b":\\" {
+            return Err(invalid());
+        }
+        if path[3..].split('\\').any(|part| {
+            let stem = part
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches(' ')
+                .to_ascii_uppercase();
+            part.is_empty()
+                || part.ends_with(['.', ' '])
+                || part
+                    .chars()
+                    .any(|c| c <= '\u{1f}' || "<>:\"/|?*".contains(c))
+                || matches!(
+                    stem.as_str(),
+                    "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$"
+                )
+                || stem
+                    .strip_prefix("COM")
+                    .or_else(|| stem.strip_prefix("LPT"))
+                    .is_some_and(|n| {
+                        matches!(
+                            n,
+                            "0" | "1"
+                                | "2"
+                                | "3"
+                                | "4"
+                                | "5"
+                                | "6"
+                                | "7"
+                                | "8"
+                                | "9"
+                                | "¹"
+                                | "²"
+                                | "³"
+                        )
+                    })
+        }) {
+            return Err(invalid());
+        }
+        Ok(format!(
+            "{}{}",
+            (bytes[0] as char).to_ascii_uppercase(),
+            &path[1..]
+        ))
+    }
+
+    fn check_chosen_acl(
+        folder: &File,
+        expected: &Local,
+        final_dir: bool,
+        inside_profile: bool,
+        drive_root: bool,
+    ) -> io::Result<()> {
+        unsafe {
+            let (mut owner, mut user, mut acl, mut descriptor) =
+                (null_mut(), null_mut(), null_mut(), null_mut());
+            let code = GetSecurityInfo(
+                folder.as_raw_handle(),
+                1,
+                5,
+                &mut owner,
+                null_mut(),
+                &mut acl,
+                null_mut(),
+                &mut descriptor,
+            );
+            let _descriptor = Local(descriptor);
+            if code != 0 {
+                return Err(io::Error::from_raw_os_error(code as i32));
+            }
+            let mut defaulted = 0;
+            check(GetSecurityDescriptorOwner(
+                expected.0,
+                &mut user,
+                &mut defaulted,
+            ))?;
+            let trusted = |sid: Ptr| {
+                !sid.is_null()
+                    && (EqualSid(sid, user) != 0
+                        || IsWellKnownSid(sid, 22) != 0
+                        || IsWellKnownSid(sid, 26) != 0)
+            };
+            if owner.is_null()
+                || user.is_null()
+                || acl.is_null()
+                || !(trusted(owner) || (drive_root && is_windows_servicing_sid(owner)))
+                || (final_dir && EqualSid(owner, user) == 0)
+            {
+                return Err(invalid());
+            }
+            const INHERIT_ONLY: u8 = 8;
+            const READ_TRAVERSE: u32 = 0xa012_00a9;
+            const ADD_SUBDIRECTORY: u32 = 4;
+            let public_parent_access =
+                READ_TRAVERSE | if inside_profile { 0 } else { ADD_SUBDIRECTORY };
+            for index in 0..(*acl).count {
+                let mut ace = null_mut();
+                check(GetAce(acl, u32::from(index), &mut ace))?;
+                match (*ace).kind {
+                    1 => {}
+                    0 if (*ace).size >= 16 => {
+                        let mask = *ace.cast::<u32>().add(1);
+                        let sid = ace.cast::<u32>().add(2).cast();
+                        if !trusted(sid)
+                            && (final_dir
+                                || ((*ace).flags & INHERIT_ONLY == 0
+                                    && mask & !public_parent_access != 0))
+                        {
+                            return Err(invalid());
+                        }
+                    }
+                    _ => return Err(invalid()),
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn is_windows_servicing_sid(sid: Ptr) -> bool {
+        let text = wide(OsStr::new(
+            "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+        ));
+        let mut raw = null_mut();
+        if unsafe { ConvertStringSidToSidW(text.as_ptr(), &mut raw) } == 0 {
+            return false;
+        }
+        let expected = Local(raw);
+        unsafe { EqualSid(sid, expected.0) != 0 }
     }
 
     fn lock_directory(path: &Path, check_security: bool) -> io::Result<File> {

@@ -1,0 +1,13 @@
+# GitHub build and packaging plan
+
+This plan puts Sliploom source and reproducible test builds in `Master0fFate/project-sliploom`. It does not open the repository to the public, publish a GitHub Release, or claim runtime support on every target.
+
+| Order | Work | Exit check |
+| --- | --- | --- |
+| 1 | Create an empty private repository. Add ignore rules for local worktrees, developer settings, secrets, and build output. Review the staged source and everything reachable from `main`; do not publish local branches or tags. | The repository is private, the index contains only intended source and assets, and both the staged tree and reachable history pass a redacted secret scan. If a real credential appears, stop and rotate it before pushing. |
+| 2 | Configure [Build checks](../.github/workflows/build.yml) for Windows x64, macOS Apple Silicon, and Ubuntu 24.04 x64. Check formatting and Clippy, then build both Rust crates with their lockfiles. On Ubuntu, build and lint Android with JDK 21 and Android SDK 36. | All four jobs succeed on the same commit. An Android build and lint pass is not a device test. |
+| 3 | Configure [Package desktop](../.github/workflows/package.yml) as a manual workflow. Build release binaries natively and package a Windows installer, macOS disk image, and Ubuntu `.deb`. Upload only the packages and checksums as Actions artifacts. | The three matrix jobs succeed, the artifacts match their advertised architectures, and the supplied SHA-256 checksums verify. No signing keys enter these jobs. |
+| 4 | Document current platform support, local development, and how to find artifacts in the [README](../README.md). Commit the reviewed source, push `main`, and run the two workflows. | GitHub shows the reviewed commit and the resulting job statuses. Record failures rather than counting configured jobs as passes. |
+| 5 | Before a public release, test each installer on a clean desktop. Test transfers both ways with a real Android device, validate accessibility and installation/uninstallation, and decide which OS versions and architectures to support. Choose a project license and finish signing, macOS notarization, and release review. | Acceptance evidence for the exact release candidate satisfies the [master plan](MASTER_PLAN.md#15-release-definition-and-metrics). Until then the artifacts are private, unsigned test builds. |
+
+The commit and privacy review are required before pushing. Build checks and documentation can be prepared in parallel; package verification uses the same reviewed commit as CI. If one platform fails, read that job's first actionable error, fix it without weakening the check, and rerun. If a runner is unavailable, report that platform as unverified.

@@ -4,7 +4,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     path::{Component, Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -21,8 +21,11 @@ use time::OffsetDateTime;
 
 use crate::{MAX_BYTES, Result, check_length, invalid};
 
+pub mod batch;
 pub mod cable;
 mod filename;
+pub mod sender;
+pub mod trust;
 
 const INVITATION_LIFETIME: Duration = Duration::from_secs(120);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -33,8 +36,29 @@ const MAX_ATTEMPTS: usize = 8;
 const MAX_CHUNK: usize = 65_536;
 const MAX_NAME_BYTES: usize = 180;
 const MAX_PUBLISH_ATTEMPTS: usize = 1_000;
-const VERSION: [u8; 5] = *b"SEAM\x02";
 const ACCEPT: [u8; 5] = [0x02, 0, 0, 0, 0];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WifiVersion {
+    Legacy,
+    Batch,
+}
+
+impl WifiVersion {
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Legacy => "SEAM2:",
+            Self::Batch => "SEAM4:",
+        }
+    }
+
+    fn prelude(self) -> [u8; 5] {
+        match self {
+            Self::Legacy => *b"SEAM\x02",
+            Self::Batch => *b"SEAM\x04",
+        }
+    }
+}
 
 pub struct ReceiveSession {
     listener: TcpListener,
@@ -43,6 +67,7 @@ pub struct ReceiveSession {
     token: [u8; 32],
     tls: Arc<ServerConfig>,
     expires_at: Instant,
+    version: WifiVersion,
 }
 
 pub struct Receipt {
@@ -53,6 +78,14 @@ pub struct Receipt {
 
 impl ReceiveSession {
     pub fn bind(address: Ipv4Addr, folder: &Path) -> Result<Self> {
+        Self::bind_version(address, folder, WifiVersion::Legacy)
+    }
+
+    pub fn bind_batch(address: Ipv4Addr, folder: &Path) -> Result<Self> {
+        Self::bind_version(address, folder, WifiVersion::Batch)
+    }
+
+    fn bind_version(address: Ipv4Addr, folder: &Path, version: WifiVersion) -> Result<Self> {
         if !address.is_private() {
             return Err(invalid("an RFC1918 IPv4 address is required").into());
         }
@@ -90,7 +123,7 @@ impl ReceiveSession {
         packed[4..6].copy_from_slice(&port.to_be_bytes());
         packed[6..38].copy_from_slice(&fingerprint);
         packed[38..].copy_from_slice(&token);
-        let invitation = format!("SEAM2:{}", URL_SAFE_NO_PAD.encode(packed));
+        let invitation = format!("{}{}", version.prefix(), URL_SAFE_NO_PAD.encode(packed));
 
         Ok(Self {
             listener,
@@ -99,6 +132,7 @@ impl ReceiveSession {
             token,
             tls: Arc::new(tls),
             expires_at: Instant::now() + INVITATION_LIFETIME,
+            version,
         })
     }
 
@@ -116,6 +150,58 @@ impl ReceiveSession {
         on_authenticated: impl FnOnce(),
         progress: impl FnMut(u64),
     ) -> Result<Receipt> {
+        let cancelled = Cancellation {
+            worker: cancelled,
+            connection: None,
+        };
+        let (mut stream, folder) = self.start(cancelled, WifiVersion::Legacy, on_authenticated)?;
+        let offer = read_offer(&mut stream)?;
+        receive_file(&mut stream, &folder, offer, progress)
+    }
+
+    pub fn receive_batch(
+        self,
+        cancelled: &AtomicBool,
+        approve: impl FnOnce(batch::BatchOffer) -> bool,
+        saved: impl FnMut(Receipt),
+        progress: impl FnMut(u64),
+    ) -> Result<()> {
+        let cancelled = Cancellation {
+            worker: cancelled,
+            connection: None,
+        };
+        let (mut stream, folder) = self.start(cancelled, WifiVersion::Batch, || {})?;
+        batch::receive(&mut stream, &folder, approve, saved, progress, None)
+    }
+
+    #[cfg(windows)]
+    fn receive_batch_trusted(
+        self,
+        cancelled: Cancellation<'_>,
+        publish_gate: &Mutex<()>,
+        approve: impl FnOnce(batch::BatchOffer) -> bool,
+        saved: impl FnMut(Receipt),
+    ) -> Result<()> {
+        let (mut stream, folder) = self.start(cancelled, WifiVersion::Batch, || {})?;
+        batch::receive(
+            &mut stream,
+            &folder,
+            approve,
+            saved,
+            |_| {},
+            Some(publish_gate),
+        )
+    }
+
+    fn start<'a>(
+        self,
+        cancelled: Cancellation<'a>,
+        version: WifiVersion,
+        on_authenticated: impl FnOnce(),
+    ) -> Result<(TlsStream<'a>, PathBuf)> {
+        if self.version != version {
+            return Err(invalid("invitation version does not match receiver mode").into());
+        }
         let mut stream = self.accept_authenticated(cancelled)?;
         let folder = self.folder;
         drop(self.listener);
@@ -125,15 +211,10 @@ impl ReceiveSession {
         stream.sock.idle_deadline = now + IDLE_TIMEOUT;
         stream.write_all(&ACCEPT)?;
         stream.flush()?;
-        let offer = read_offer(&mut stream)?;
-        receive_file(&mut stream, &folder, offer, progress)
+        Ok((stream, folder))
     }
 
-    fn accept_authenticated<'a>(&self, cancelled: &'a AtomicBool) -> Result<TlsStream<'a>> {
-        let cancelled = Cancellation {
-            worker: cancelled,
-            connection: None,
-        };
+    fn accept_authenticated<'a>(&self, cancelled: Cancellation<'a>) -> Result<TlsStream<'a>> {
         for _ in 0..MAX_ATTEMPTS {
             let accepted = loop {
                 check_deadline(cancelled, self.expires_at)?;
@@ -170,7 +251,7 @@ impl ReceiveSession {
             };
             let mut stream =
                 StreamOwned::new(ServerConnection::new(Arc::clone(&self.tls))?, socket);
-            if authenticate(&mut stream, &self.token).is_ok() {
+            if authenticate(&mut stream, self.version.prelude(), &self.token).is_ok() {
                 stream.sock.check()?;
                 return Ok(stream);
             }
@@ -276,7 +357,7 @@ impl BoundedTcp<'_> {
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Ok(count) => {
-                    if count != 0 {
+                    if count != 0 && self.idle_deadline < self.deadline {
                         self.idle_deadline = Instant::now() + IDLE_TIMEOUT;
                     }
                     return Ok(count);
@@ -303,10 +384,10 @@ impl Write for BoundedTcp<'_> {
     }
 }
 
-fn authenticate(stream: &mut TlsStream<'_>, token: &[u8; 32]) -> io::Result<()> {
-    let mut version = [0; VERSION.len()];
+fn authenticate(stream: &mut TlsStream<'_>, prelude: [u8; 5], token: &[u8; 32]) -> io::Result<()> {
+    let mut version = [0; 5];
     stream.read_exact(&mut version)?;
-    if version != VERSION {
+    if version != prelude {
         return Err(invalid("unsupported SEAM envelope"));
     }
     let presented = read_frame::<32>(stream, 0x01)?;
@@ -332,6 +413,14 @@ fn read_frame<const N: usize>(stream: &mut impl CheckedStream, kind: u8) -> io::
     stream.read_exact(&mut payload)?;
     stream.check()?;
     Ok(payload)
+}
+
+fn write_frame(stream: &mut impl CheckedStream, kind: u8, payload: &[u8]) -> io::Result<()> {
+    stream.check()?;
+    let [a, b, c, d] = (payload.len() as u32).to_be_bytes();
+    stream.write_all(&[kind, a, b, c, d])?;
+    stream.write_all(payload)?;
+    stream.flush()
 }
 
 fn read_offer(stream: &mut impl CheckedStream) -> io::Result<cable::Offer> {
@@ -416,7 +505,7 @@ fn receive_file(
     staging.as_file().sync_all()?;
     let prefix = &prefix[..bytes.min(prefix.len() as u64) as usize];
     let (stem, extension) = filename::parts(name, offer.is_pdf, prefix);
-    let path = publish_file(stream, folder, staging, stem, extension)?;
+    let path = publish_file(stream, folder, staging, stem, Some(extension), None)?;
 
     let mut committed = [0; 45];
     committed[..5].copy_from_slice(&[0x06, 0, 0, 0, 40]);
@@ -437,15 +526,22 @@ fn publish_file(
     folder: &Path,
     mut staging: NamedTempFile,
     stem: &str,
-    extension: &str,
+    extension: Option<&str>,
+    publish_gate: Option<&Mutex<()>>,
 ) -> io::Result<PathBuf> {
     for attempt in 1..=MAX_PUBLISH_ATTEMPTS {
-        let path = if attempt == 1 {
-            folder.join(format!("{stem}.{extension}"))
+        let mut name = if attempt == 1 {
+            stem.to_owned()
         } else {
-            folder.join(format!("{stem} ({attempt}).{extension}"))
+            format!("{stem} ({attempt})")
         };
+        if let Some(extension) = extension {
+            name.push('.');
+            name.push_str(extension);
+        }
+        let path = folder.join(name);
         check_directory(folder)?;
+        let _gate = publish_gate.map(|gate| gate.lock().expect("publish lock poisoned"));
         stream.check()?;
         match staging.persist_noclobber(&path) {
             Ok(_) => return Ok(path),

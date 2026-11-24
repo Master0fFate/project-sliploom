@@ -5,6 +5,7 @@ name: Build checks
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,8 +25,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15, ubuntu-24.04]
+        include:
+          - os: windows-2025
+            arch: X64
+          - os: macos-15
+            arch: ARM64
+          - os: ubuntu-24.04
+            arch: X64
     steps:
+      - name: Check runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: test "$RUNNER_ARCH" = "$EXPECTED_ARCH"
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
@@ -66,7 +78,7 @@ jobs:
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9
         with:
           distribution: temurin
-          java-version: '21.0.13+100000002.0.LTS'
+          java-version: '21'
 
       - name: Install Android SDK Platform 36 and Build Tools 35.0.0
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0"'
@@ -84,4 +96,4 @@ jobs:
               }
           }
           GRADLE
-          ./gradlew --no-daemon --continue --init-script "$init_script" :app:assembleDebug :app:lintDebug
+          bash ./gradlew --no-daemon --continue --init-script "$init_script" :app:assembleDebug :app:lintDebug

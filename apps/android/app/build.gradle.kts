@@ -14,8 +14,8 @@ android {
         applicationId = "org.projectseam.android"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 7
+        versionName = "0.7"
     }
 
     compileOptions {
@@ -26,6 +26,8 @@ android {
     buildFeatures {
         compose = true
     }
+
+    packaging.resources.pickFirsts += "META-INF/LICENSE.md"
 }
 
 kotlin {
@@ -43,4 +45,5 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("com.google.zxing:core:3.4.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.87")
 }

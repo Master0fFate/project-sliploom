@@ -6,13 +6,14 @@ use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
 use qrcode::{Color as QrColor, QrCode};
-use receiver_service::lan::ReceiveSession;
+use receiver_service::lan::sender::SendInvite;
+use receiver_service::lan::{Receipt, ReceiveSession};
 use zgx::canvas::{Canvas, Path};
 use zgx::compose::prelude::*;
 use zgx::reactive::Signal;
@@ -20,16 +21,26 @@ use zgx::scene::{Color, Rect};
 use zgx::semantics::Live;
 use zgx_desktop::{Application, FileDialogOptions, Titlebar, WindowContext, WindowOptions};
 
-use material::{
-    backdrop, field, headline, metadata, mode_action, native_glass, pane, secondary, wordmark,
-};
+use history::History;
+use material::{backdrop, headline, metadata, quiet_action, receive_actions, receive_primary};
 
+mod acrylic;
 #[cfg(target_os = "windows")]
 mod adb;
 #[cfg(target_os = "windows")]
 mod cable_ui;
+mod dashboard;
+mod history;
 mod material;
+#[cfg(target_os = "windows")]
+mod mtp;
+mod send_ui;
 mod titlebar;
+#[cfg(target_os = "windows")]
+mod trusted_ui;
+
+const APP_NAME: &str = "Sliploom";
+const WIFI_TICK: Duration = Duration::from_millis(75);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Activity {
@@ -41,11 +52,13 @@ enum Activity {
 
 #[derive(Clone)]
 struct Screen {
-    address: Signal<String>,
     folder: Signal<Option<PathBuf>>,
+    default_folder: Signal<Option<PathBuf>>,
     activity: Signal<Activity>,
     status: Signal<String>,
     invitation: Signal<String>,
+    manual_code: Signal<bool>,
+    history: History,
     worker: WifiWorker,
 }
 
@@ -66,8 +79,63 @@ impl WifiWorker {
 
 enum Event {
     Invitation(String),
-    Incoming,
-    Finished(String),
+    BatchStarted(usize),
+    Saved(Receipt),
+    Finished(&'static str),
+}
+
+fn receive_wifi(
+    folder: PathBuf,
+    #[cfg(target_os = "windows")] selected: Option<PathBuf>,
+    tx: &mpsc::Sender<Event>,
+    cancel: &AtomicBool,
+    progress: &AtomicU64,
+) -> &'static str {
+    #[cfg(target_os = "windows")]
+    let _guard = match cable_ui::open_destination(selected.as_deref(), false) {
+        Ok(guard) if guard.path == folder => guard,
+        _ => return "Can’t use this save folder. Choose another folder.",
+    };
+    let Some(address) = likely_address() else {
+        return "No local network found. Connect to Wi-Fi and try again.";
+    };
+    let Ok(session) = ReceiveSession::bind_batch(address, &folder) else {
+        return "Couldn’t start. Check your Wi-Fi and save folder.";
+    };
+    if cancel.load(Ordering::Acquire) {
+        return "Receive cancelled.";
+    }
+    let invitation = session.invitation();
+    if !invitation.starts_with("SEAM4:")
+        || !SendInvite::parse(invitation).is_some_and(|i| i.is_batch())
+    {
+        return "Couldn’t create a valid batch code.";
+    }
+    if tx.send(Event::Invitation(invitation.to_owned())).is_err() {
+        return "Receive cancelled.";
+    }
+    let result = session.receive_batch(
+        cancel,
+        |offer| {
+            !cancel.load(Ordering::Acquire) && tx.send(Event::BatchStarted(offer.count)).is_ok()
+        },
+        |receipt| {
+            let _ = tx.send(Event::Saved(receipt));
+        },
+        |bytes| progress.store(bytes, Ordering::Release),
+    );
+    match result {
+        Ok(()) => "",
+        _ if cancel.load(Ordering::Acquire) => "Receive cancelled.",
+        Err(error)
+            if error
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::TimedOut) =>
+        {
+            "Receive timed out. Start again to retry."
+        }
+        _ => "Receive did not complete. Start again to retry.",
+    }
 }
 
 impl Screen {
@@ -75,71 +143,27 @@ impl Screen {
         if self.activity.get() != Activity::Idle {
             return;
         }
-        let Some(folder) = self.folder.get() else {
+        let selected = self.folder.get();
+        let Some(folder) = selected.clone().or_else(|| self.default_folder.get()) else {
             self.status.set("Choose a save folder first.".into());
             return;
         };
-        let Ok(address) = self.address.get().trim().parse::<Ipv4Addr>() else {
-            self.status
-                .set("Enter this computer’s private IPv4 address.".into());
-            return;
-        };
-        if !address.is_private() {
-            self.status
-                .set("Use a private IPv4 address from your local network.".into());
-            return;
-        }
-
         let (tx, rx) = mpsc::channel();
         self.worker.cancel.store(false, Ordering::Release);
         let cancel = self.worker.cancel.clone();
+        let progress = Arc::new(AtomicU64::new(0));
+        let worker_progress = progress.clone();
         let worker = thread::Builder::new()
             .name("seam-receive".into())
             .spawn(move || {
-                let message = match ReceiveSession::bind(address, &folder) {
-                    Ok(session) if !cancel.load(Ordering::Acquire) => {
-                        if tx
-                            .send(Event::Invitation(session.invitation().to_owned()))
-                            .is_err()
-                        {
-                            return;
-                        }
-                        match session.receive_with_start(
-                            &cancel,
-                            || {
-                                let _ = tx.send(Event::Incoming);
-                            },
-                            |_| {},
-                        ) {
-                            Ok(receipt) => {
-                                let status = if receipt.confirmed {
-                                    "Saved"
-                                } else {
-                                    "Saved here; phone may not have received confirmation"
-                                };
-                                format!(
-                                    "{status} ({} bytes)\n{}",
-                                    receipt.bytes,
-                                    receipt.path.display()
-                                )
-                            }
-                            Err(_) if cancel.load(Ordering::Acquire) => "Cancelled.".into(),
-                            Err(error)
-                                if error.downcast_ref::<io::Error>().is_some_and(|error| {
-                                    error.kind() == io::ErrorKind::TimedOut
-                                }) =>
-                            {
-                                "Receive timed out. Start again to retry.".into()
-                            }
-                            Err(_) => {
-                                "Receive ended without a saved file. Start again to retry.".into()
-                            }
-                        }
-                    }
-                    _ if cancel.load(Ordering::Acquire) => "Cancelled.".into(),
-                    Err(_) => "Couldn’t start. Check the IPv4 address and save folder.".into(),
-                    Ok(_) => "Cancelled.".into(),
-                };
+                let message = receive_wifi(
+                    folder,
+                    #[cfg(target_os = "windows")]
+                    selected,
+                    &tx,
+                    &cancel,
+                    &worker_progress,
+                );
                 let _ = tx.send(Event::Finished(message));
             });
         let Ok(worker) = worker else {
@@ -149,37 +173,73 @@ impl Screen {
         self.worker.thread.replace(Some(worker));
 
         self.activity.set(Activity::Receiving);
+        self.manual_code.set(false);
         self.status.set("Starting…".into());
         let screen = self.clone();
         tasks.spawn(async move {
-            loop {
+            let mut total = 0;
+            let mut saved = 0;
+            let mut unconfirmed = 0;
+            let mut last_progress = None;
+            let message = loop {
                 match rx.try_recv() {
                     Ok(Event::Invitation(invitation))
                         if screen.activity.get() == Activity::Receiving =>
                     {
                         screen.invitation.set(invitation);
-                        screen
-                            .status
-                            .set("Share this one-time invitation only with your sender.".into());
+                        screen.status.set(String::new());
                     }
-                    Ok(Event::Incoming) if screen.activity.get() == Activity::Receiving => {
+                    Ok(Event::Invitation(_)) => {}
+                    Ok(Event::BatchStarted(count)) => {
+                        total = count;
                         screen.invitation.set(String::new());
-                        screen.status.set("Receiving…".into());
+                        screen.manual_code.set(false);
+                        if screen.activity.get() == Activity::Receiving {
+                            screen.status.set(format!("Receiving… 0/{total} saved"));
+                        }
                     }
-                    Ok(Event::Invitation(_) | Event::Incoming) => {}
-                    Ok(Event::Finished(message)) => {
-                        screen.finish(message);
-                        return;
+                    Ok(Event::Saved(receipt)) => {
+                        saved += 1;
+                        unconfirmed += usize::from(!receipt.confirmed);
+                        screen.history.record(receipt.path, receipt.bytes);
                     }
-                    Err(TryRecvError::Disconnected) => {
-                        screen.finish(
-                            "The receiver stopped unexpectedly. Check your save folder.".into(),
-                        );
-                        return;
+                    Ok(Event::Finished(message)) => break message,
+                    Err(TryRecvError::Disconnected) => break "The receiver stopped unexpectedly.",
+                    Err(TryRecvError::Empty) => {
+                        if screen.activity.get() == Activity::Receiving && total > 0 {
+                            let bytes = progress.load(Ordering::Acquire);
+                            if (bytes > 0 || saved > 0) && last_progress != Some((saved, bytes)) {
+                                last_progress = Some((saved, bytes));
+                                screen.status.set(format!(
+                                    "Receiving… {saved}/{total} saved · {}",
+                                    byte_size(bytes)
+                                ));
+                            }
+                        }
+                        zgx::timer::sleep(WIFI_TICK).await;
                     }
-                    Err(TryRecvError::Empty) => zgx::timer::sleep(Duration::from_millis(75)).await,
                 }
+            };
+            let mut status = if saved == 0 {
+                if message.is_empty() {
+                    "Receive did not complete. Start again to retry.".into()
+                } else {
+                    message.to_owned()
+                }
+            } else if message.is_empty() && saved == total {
+                format!("Saved {}.", file_count(saved))
+            } else {
+                format!("Saved {saved}/{total} files. {message}")
+                    .trim_end()
+                    .to_owned()
+            };
+            if unconfirmed > 0 {
+                status.push_str(&format!(
+                    " The sender may not have confirmation for {}.",
+                    file_count(unconfirmed)
+                ));
             }
+            screen.finish(status).await;
         });
     }
 
@@ -192,10 +252,39 @@ impl Screen {
         }
     }
 
-    fn finish(&self, message: String) {
+    async fn finish(&self, message: String) {
+        while self
+            .worker
+            .thread
+            .borrow()
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            zgx::timer::sleep(Duration::from_millis(25)).await;
+        }
+        if let Some(worker) = self.worker.thread.borrow_mut().take() {
+            let _ = worker.join();
+        }
         self.invitation.set(String::new());
+        self.manual_code.set(false);
         self.status.set(message);
         self.activity.set(Activity::Idle);
+    }
+}
+
+pub(crate) fn file_count(count: usize) -> String {
+    let unit = if count == 1 { "file" } else { "files" };
+    format!("{count} {unit}")
+}
+
+pub(crate) fn byte_size(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.)
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -208,11 +297,12 @@ fn likely_address() -> Option<Ipv4Addr> {
     }
 }
 
-fn invitation_qr(code: QrCode) -> View {
+fn invitation_qr(code: QrCode, max_side: Option<usize>) -> View {
     const QUIET_ZONE: usize = 4;
-    const MODULE: f32 = 4.;
     let width = code.width();
-    let size = (width + 2 * QUIET_ZONE) as f32 * MODULE;
+    let padded_width = width + 2 * QUIET_ZONE;
+    let module = max_side.map_or(4, |side| (side / padded_width).max(1)) as f32;
+    let size = padded_width as f32 * module;
     canvas(move |_| {
         let mut drawing = Canvas::new();
         drawing.fill(
@@ -224,10 +314,10 @@ fn invitation_qr(code: QrCode) -> View {
                 if code[(x, y)] == QrColor::Dark {
                     drawing.fill(
                         Path::rectangle(Rect::new(
-                            (x + QUIET_ZONE) as f32 * MODULE,
-                            (y + QUIET_ZONE) as f32 * MODULE,
-                            MODULE,
-                            MODULE,
+                            (x + QUIET_ZONE) as f32 * module,
+                            (y + QUIET_ZONE) as f32 * module,
+                            module,
+                            module,
                         )),
                         Color(0, 0, 0, 255),
                     );
@@ -237,6 +327,58 @@ fn invitation_qr(code: QrCode) -> View {
         drawing
     })
     .size(size, size)
+}
+
+async fn pick_destination(
+    dialogs: zgx_desktop::FileDialogs,
+    current: Option<PathBuf>,
+) -> Result<Option<PathBuf>, &'static str> {
+    let mut options = FileDialogOptions::new("Choose save folder");
+    if let Some(folder) = current {
+        options = options.directory(folder);
+    }
+    let Some(path) = dialogs
+        .open_folder(options)
+        .await
+        .map_err(|_| "Couldn’t open the folder picker.")?
+    else {
+        return Ok(None);
+    };
+    #[cfg(target_os = "windows")]
+    {
+        let (tx, rx) = mpsc::channel();
+        thread::Builder::new()
+            .name("seam-folder-check".into())
+            .spawn(move || {
+                let _ = tx
+                    .send(cable_ui::open_destination(Some(&path), false).map(|folder| folder.path));
+            })
+            .map_err(|_| "Couldn’t check the save folder.")?;
+        loop {
+            match rx.try_recv() {
+                Ok(Ok(path)) => return Ok(Some(path)),
+                Ok(Err(_)) => {
+                    return Err(
+                        "Choose a private folder inside your Windows user profile on a fixed drive.",
+                    );
+                }
+                Err(TryRecvError::Disconnected) => return Err("Couldn’t check the save folder."),
+                Err(TryRecvError::Empty) => zgx::timer::sleep(Duration::from_millis(25)).await,
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    Ok(Some(path))
+}
+
+fn destination_label(folder: Signal<Option<PathBuf>>, default: Signal<Option<PathBuf>>) -> View {
+    metadata(text_signal(move || {
+        folder.get().or_else(|| default.get()).map_or_else(
+            || "No folder selected".into(),
+            |path| path.display().to_string(),
+        )
+    }))
+    .truncate()
 }
 
 fn wifi_view(
@@ -254,20 +396,18 @@ fn wifi_view(
         let dialogs = dialogs.clone();
         let picking = picking.clone();
         picker_tasks.spawn(async move {
-            let mut options = FileDialogOptions::new("Choose save folder");
-            if let Some(folder) = picking.folder.get() {
-                options = options.directory(folder);
-            }
-            match dialogs.open_folder(options).await {
+            let current = picking
+                .folder
+                .get()
+                .or_else(|| picking.default_folder.get());
+            match pick_destination(dialogs, current).await {
                 Ok(Some(folder)) => {
                     picking.folder.set(Some(folder));
                     picking.status.set(String::new());
                 }
                 Ok(None) => {}
-                Err(_) => {
-                    picking
-                        .status
-                        .set("Couldn’t open the folder picker.".into());
+                Err(error) => {
+                    picking.status.set(error.into());
                 }
             }
             picking.activity.set(Activity::Idle);
@@ -276,239 +416,533 @@ fn wifi_view(
 
     let activity = screen.activity.clone();
     let controls_disabled = move || activity.get() != Activity::Idle;
+    let receive_disabled = controls_disabled.clone();
     let activity = screen.activity.clone();
     let actions = screen.clone();
-    let status = screen.status.clone();
-    let folder = screen.folder.clone();
-    let invitation = screen.invitation.clone();
-    let invitation_visible = invitation.clone();
-    let status_visible = status.clone();
-    column()
-        .gap(16.)
-        .child(headline("Receive over Wi-Fi"))
-        .child(
-            column()
-                .gap(8.)
-                .child(metadata(text("Private IPv4 address")))
-                .child(
-                    field(text_input("Private IPv4 address", screen.address))
-                        .placeholder("e.g. 192.168.1.20")
-                        .disabled_when(controls_disabled.clone()),
-                ),
-        )
-        .child(
-            column()
-                .gap(8.)
-                .child(
-                    row().child(
-                        secondary("Choose save folder")
-                            .disabled_when(controls_disabled.clone())
-                            .on_click(pick_folder),
-                    ),
-                )
-                .child(metadata(text_signal(move || {
-                    folder.with(|folder| {
-                        folder.as_ref().map_or_else(
-                            || "No folder selected".into(),
-                            |path| path.display().to_string(),
-                        )
-                    })
-                }))),
-        )
-        .child(row().child(switch(
-            move || matches!(activity.get(), Activity::Receiving | Activity::Cancelling),
-            move |active, _| {
-                let screen = actions.clone();
+    let code = wifi_code(screen.invitation.clone());
+    let code_controls = wifi_code_controls(screen.invitation.clone(), screen.manual_code.clone());
+    let controls = column()
+        .grow()
+        .min_w(0.)
+        .max_w(336.)
+        .gap(12.)
+        .child(destination_label(
+            screen.folder.clone(),
+            screen.default_folder.clone(),
+        ))
+        .child(code_controls);
+    let primary = switch(
+        move || matches!(activity.get(), Activity::Receiving | Activity::Cancelling),
+        move |active, _| {
+            let screen = actions.clone();
+            if active {
+                let activity = screen.activity.clone();
+                receive_primary("Cancel")
+                    .disabled_when(move || activity.get() == Activity::Cancelling)
+                    .on_click(move || screen.stop())
+            } else {
                 let tasks = tasks.clone();
-                if active {
-                    let activity = screen.activity.clone();
-                    secondary("Cancel")
-                        .disabled_when(move || activity.get() == Activity::Cancelling)
-                        .on_click(move || screen.stop())
-                } else {
-                    secondary("Receive once")
-                        .disabled_when(controls_disabled.clone())
-                        .on_click(move || screen.start(&tasks))
-                }
-            },
-        )))
-        .child(
-            switch(
-                move || !status_visible.with(String::is_empty),
-                move |visible, _| {
-                    if visible {
-                        let status = status.clone();
-                        metadata(text_signal(move || status.get())).live(Live::Polite)
-                    } else {
-                        div().hidden()
-                    }
-                },
-            )
-            .display_contents(),
-        )
-        .child(
-            switch(
-                move || !invitation_visible.with(String::is_empty),
-                move |visible, _| {
-                    if !visible {
-                        return div().hidden();
-                    }
-                    let qr = invitation.with(|value| QrCode::new(value.as_bytes()));
-                    let scan = match qr {
-                        Ok(code) => column()
-                            .gap(8.)
-                            .child(metadata(text("Scan invitation").heading(2)))
-                            .child(invitation_qr(code)),
-                        Err(_) => metadata(text(
-                            "Couldn’t make a QR code. Enter the invitation manually.",
-                        )),
-                    };
-                    let invitation = invitation.clone();
-                    column()
-                        .gap(8.)
-                        .child(scan)
-                        .child(metadata(text("Manual invitation")))
-                        .child(metadata(text_signal(move || invitation.get())).selectable(true))
-                },
-            )
-            .display_contents(),
-        )
+                receive_primary("Receive once")
+                    .disabled_when(receive_disabled.clone())
+                    .on_click(move || screen.start(&tasks))
+            }
+        },
+    )
+    .display_contents();
+    column()
+        .gap(8.)
+        .child(receive_actions(
+            primary,
+            quiet_action(text("Choose save folder"))
+                .disabled_when(controls_disabled)
+                .on_click(pick_folder),
+        ))
+        .child(row().gap(16.).items_start().child(controls).child(code))
+        .child(inline_status(screen.status))
+}
+
+pub(crate) fn inline_status(status: Signal<String>) -> View {
+    let visible = status.clone();
+    switch(
+        move || !visible.with(String::is_empty),
+        move |present, _| {
+            if present {
+                let status = status.clone();
+                metadata(text_signal(move || status.get())).live(Live::Polite)
+            } else {
+                div().hidden()
+            }
+        },
+    )
+    .display_contents()
+}
+
+fn wifi_code(invitation: Signal<String>) -> View {
+    let visible = invitation.clone();
+    switch(
+        move || !visible.with(String::is_empty),
+        move |visible, _| {
+            if !visible {
+                return div().hidden();
+            }
+            match invitation.with(|value| QrCode::new(value.as_bytes())) {
+                Ok(code) => invitation_qr(code, None).shrink_0(),
+                Err(_) => metadata(text("QR unavailable. Use the manual code.")).w(184.),
+            }
+        },
+    )
+    .display_contents()
+}
+
+fn wifi_code_controls(invitation: Signal<String>, manual: Signal<bool>) -> View {
+    let visible = invitation.clone();
+    switch(
+        move || !visible.with(String::is_empty),
+        move |visible, _| {
+            if !visible {
+                return div().hidden();
+            }
+            let toggle = manual.clone();
+            let expanded = manual.clone();
+            let opened = manual.clone();
+            let invitation = invitation.clone();
+            column()
+                .items_start()
+                .gap(8.)
+                .child(metadata(text("Scan with Sliploom").heading(2)))
+                .child(metadata(text("Anyone with this code can send one batch.")))
+                .child(
+                    quiet_action(text_signal(move || {
+                        if expanded.get() {
+                            "Hide code"
+                        } else {
+                            "Manual code"
+                        }
+                        .into()
+                    }))
+                    .on_click(move || {
+                        toggle.set(!toggle.get());
+                    }),
+                )
+                .child_when(
+                    move || opened.get().then_some(()),
+                    move |(), _| metadata(text(invitation.get())).w_full().selectable(true),
+                )
+        },
+    )
+    .display_contents()
+}
+
+fn status_control(
+    open: Signal<bool>,
+    sending: Signal<bool>,
+    send: send_ui::Card,
+    wifi: Signal<bool>,
+    screen: Screen,
+    tasks: zgx_desktop::TaskSpawner,
+    #[cfg(target_os = "windows")] cable: cable_ui::Cable,
+) -> (View, View) {
+    let mut hide = None;
+    let visible = open.clone();
+    let badge_sending = sending.clone();
+    let badge_send = send.clone();
+    let badge_mode = wifi.clone();
+    let badge_screen = screen.clone();
+    #[cfg(target_os = "windows")]
+    let badge_cable = cable.clone();
+    let trigger = quiet_action(text_signal(move || {
+        let update = if badge_sending.get() {
+            badge_send.has_status_update()
+        } else if badge_mode.get() {
+            badge_screen.activity.get() == Activity::Idle
+                && !badge_screen.status.with(String::is_empty)
+        } else {
+            #[cfg(target_os = "windows")]
+            let update = badge_cable.has_status_update();
+            #[cfg(not(target_os = "windows"))]
+            let update = false;
+            update
+        };
+        if update { "View status" } else { "Status" }.into()
+    }))
+    .w(100.)
+    .on_click(move || {
+        visible.set(true);
+        let visible = visible.clone();
+        hide.replace(tasks.spawn_scoped(async move {
+            zgx::timer::sleep(Duration::from_secs(5)).await;
+            visible.set(false);
+        }));
+    });
+    let toast = switch(
+        move || open.get(),
+        move |visible, _| {
+            if !visible {
+                return div().hidden();
+            }
+            let sending = sending.clone();
+            let send = send.clone();
+            let wifi = wifi.clone();
+            let screen = screen.clone();
+            #[cfg(target_os = "windows")]
+            let cable = cable.clone();
+            column()
+                .absolute()
+                .right(16.)
+                .bottom(16.)
+                .w(288.)
+                .p(12.)
+                .rounded(12.)
+                .bg(Color(35, 35, 35, 255))
+                .border(1.)
+                .border_color(Color(250, 250, 250, 32))
+                .child(
+                    switch(
+                        move || (sending.get(), wifi.get()),
+                        move |(sending, wifi_active), _| {
+                            if sending {
+                                return send.status_view();
+                            }
+                            if wifi_active {
+                                let screen = screen.clone();
+                                return metadata(text_signal(move || {
+                                    if !screen.invitation.with(String::is_empty) {
+                                        "QR ready. Scan it with Sliploom.".into()
+                                    } else {
+                                        screen.status.with(|message| {
+                                            if message.is_empty() {
+                                                "Choose Receive once to start.".into()
+                                            } else {
+                                                message.clone()
+                                            }
+                                        })
+                                    }
+                                }))
+                                .live(Live::Polite);
+                            }
+                            #[cfg(target_os = "windows")]
+                            return cable.status_view();
+                            #[cfg(not(target_os = "windows"))]
+                            metadata(text("Cable receive is available on Windows."))
+                        },
+                    )
+                    .display_contents(),
+                )
+        },
+    )
+    .display_contents();
+    (trigger, toast)
 }
 
 fn receive_screen(
     cx: &mut WindowContext,
-    glass: bool,
     wifi_worker: WifiWorker,
+    send_worker: send_ui::Worker,
     #[cfg(target_os = "windows")] workers: cable_ui::Workers,
+    #[cfg(target_os = "windows")] trust: Option<receiver_service::lan::trust::Trust>,
+    #[cfg(target_os = "windows")] trust_workers: trusted_ui::Workers,
 ) {
     cx.window.set_theme(Some(zgx::theme::Appearance::Dark));
+    let glass = acrylic::available(cx);
+    #[cfg(target_os = "windows")]
+    let trusted = trusted_ui::Panel::new(cx, trust, trust_workers);
+    let send = send_ui::Card::new(
+        cx,
+        send_worker,
+        #[cfg(target_os = "windows")]
+        trusted.clone(),
+    );
     let runtime = &cx.ui.runtime;
     let wifi = runtime.signal(false);
+    let sending = runtime.signal(false);
+    let history = History::new(cx);
+    #[cfg(target_os = "windows")]
+    trusted.watch(cx, history.clone(), sending.clone(), send.clone());
+    #[cfg(target_os = "windows")]
+    let trusted_trigger = trusted.view(sending.clone(), send.clone());
     let screen = Screen {
-        address: runtime.signal(String::new()),
         folder: runtime.signal(None),
+        default_folder: runtime.signal(None),
         activity: runtime.signal(Activity::Idle),
         status: runtime.signal(String::new()),
         invitation: runtime.signal(String::new()),
+        manual_code: runtime.signal(false),
+        history: history.clone(),
         worker: wifi_worker,
     };
+    let status_open = runtime.signal(false);
     let cancel = screen.worker.cancel.clone();
     cx.on_closed(move || cancel.store(true, Ordering::Release));
     #[cfg(target_os = "windows")]
-    let cable = cable_ui::Cable::new(cx, workers);
-    let mode = wifi.clone();
+    let cable = cable_ui::Cable::new(
+        cx,
+        workers,
+        history.clone(),
+        screen.folder.clone(),
+        screen.default_folder.clone(),
+    );
+    let (status, toast) = status_control(
+        status_open.clone(),
+        sending.clone(),
+        send.clone(),
+        wifi.clone(),
+        screen.clone(),
+        cx.tasks.clone(),
+        #[cfg(target_os = "windows")]
+        cable.clone(),
+    );
+    let title_mode = wifi.clone();
+    let title_sending = sending.clone();
+    let title_send = send.clone();
     let body_mode = wifi.clone();
+    let body_sending = sending.clone();
+    let send_screen = send.clone();
     let dialogs = cx.dialogs.clone();
     let tasks = cx.tasks.clone();
     let wifi_screen = screen.clone();
     #[cfg(target_os = "windows")]
     let cable_screen = cable.clone();
-    let offset = cx.ui.runtime.signal(0.);
-    let reset_scroll = offset.clone();
-    let content = switch(
-        move || body_mode.get(),
-        move |wifi_active, _| {
-            let view = if wifi_active {
-                wifi_view(wifi_screen.clone(), dialogs.clone(), tasks.clone())
-            } else {
-                #[cfg(target_os = "windows")]
-                let view = cable_screen.view();
-                #[cfg(not(target_os = "windows"))]
-                let view = column()
-                    .gap(8.)
-                    .child(headline("Receive by cable"))
-                    .child(metadata(text("Cable receive is available on Windows.")));
-                view
-            };
-            pane(view)
+    #[cfg(target_os = "windows")]
+    let cable_heading = cable.clone();
+    let heading = switch(
+        move || {
+            (
+                title_sending.get(),
+                title_mode.get(),
+                title_send.over_cable(),
+            )
+        },
+        move |(sending, wifi_active, send_over_cable), _| {
+            if sending {
+                return headline(if send_over_cable {
+                    "Send over cable"
+                } else {
+                    "Send over Wi-Fi"
+                });
+            }
+            if wifi_active {
+                return headline("Receive over Wi-Fi");
+            }
+            #[cfg(target_os = "windows")]
+            return cable_heading.heading();
+            #[cfg(not(target_os = "windows"))]
+            headline("Receive by cable")
         },
     )
-    .w_full()
-    .items_center()
-    .shrink_0();
-    let viewport = cx.viewport.clone();
-    let mode_switch = mode_action(text_signal(move || {
-        if wifi.get() {
-            "Use cable instead"
+    .display_contents();
+    let content = switch(
+        move || (body_sending.get(), body_mode.get()),
+        move |(sending, wifi_active), _| {
+            if sending {
+                return send_screen.view();
+            }
+            if wifi_active {
+                return wifi_view(wifi_screen.clone(), dialogs.clone(), tasks.clone());
+            }
+            #[cfg(target_os = "windows")]
+            return cable_screen.view();
+            #[cfg(not(target_os = "windows"))]
+            metadata(text("Cable receive is available on Windows."))
+        },
+    )
+    .display_contents();
+    let mode_activity = screen.activity.clone();
+    #[cfg(target_os = "windows")]
+    let cable_blocked = cable.switch_blocked();
+    #[cfg(target_os = "windows")]
+    let transition = cx.ui.runtime.signal(false);
+    #[cfg(target_os = "windows")]
+    let changing = transition.clone();
+    #[cfg(target_os = "windows")]
+    let mode_tasks = cx.tasks.clone();
+    let receive_blocked = Rc::new(move || {
+        if mode_activity.get() != Activity::Idle {
+            return true;
+        }
+        #[cfg(target_os = "windows")]
+        return changing.get() || cable_blocked();
+        #[cfg(not(target_os = "windows"))]
+        false
+    });
+    let transport_mode = sending.clone();
+    let transport_sending = sending.clone();
+    #[cfg(target_os = "windows")]
+    let transport_send = send.clone();
+    let transport_wifi = wifi.clone();
+    let transport_blocked = receive_blocked.clone();
+    #[cfg(target_os = "windows")]
+    let transport_cable = cable.clone();
+    #[cfg(target_os = "windows")]
+    let transport_transition = transition.clone();
+    #[cfg(target_os = "windows")]
+    let transport_tasks = mode_tasks.clone();
+    let transport = switch(
+        move || !transport_mode.get(),
+        move |receiving, _| {
+            if !receiving {
+                #[cfg(target_os = "windows")]
+                return transport_send.transport_switch();
+                #[cfg(not(target_os = "windows"))]
+                return div().hidden();
+            }
+            let label_mode = transport_wifi.clone();
+            let mode = transport_wifi.clone();
+            let blocked = transport_blocked.clone();
+            let click_blocked = transport_blocked.clone();
+            let sending = transport_sending.clone();
+            #[cfg(target_os = "windows")]
+            let (cable, transition, tasks) = (
+                transport_cable.clone(),
+                transport_transition.clone(),
+                transport_tasks.clone(),
+            );
+            quiet_action(text_signal(move || {
+                if label_mode.get() {
+                    "Use cable instead"
+                } else {
+                    "Use Wi-Fi instead"
+                }
+                .into()
+            }))
+            .disabled_when(move || blocked())
+            .on_click(move || {
+                let wifi_active = mode.get();
+                if sending.get() || click_blocked() {
+                    return;
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    if !cable.switch_mode(wifi_active) {
+                        return;
+                    }
+                    if !wifi_active {
+                        transition.set(true);
+                        let (mode, transition, cable) =
+                            (mode.clone(), transition.clone(), cable.clone());
+                        tasks.spawn(async move {
+                            cable.wait_for_worker().await;
+                            mode.set(true);
+                            transition.set(false);
+                        });
+                        return;
+                    }
+                }
+                mode.set(!wifi_active);
+            })
+        },
+    )
+    .display_contents();
+    let toggle_label = sending.clone();
+    let toggle_send = send.clone();
+    let toggle_blocked = receive_blocked.clone();
+    let mode_switch = quiet_action(text_signal(move || {
+        if toggle_label.get() {
+            "Receive"
         } else {
-            "Use Wi-Fi instead"
+            "Send"
         }
         .into()
     }))
+    .disabled_when(move || toggle_send.busy() || toggle_blocked())
     .on_click(move || {
-        let wifi_active = mode.get();
-        if wifi_active {
-            screen.stop();
-        } else if screen.address.with(String::is_empty)
-            && let Some(ip) = likely_address()
-        {
-            screen.address.set(ip.to_string());
+        if send.busy() || receive_blocked() {
+            return;
+        }
+        if sending.get() {
+            #[cfg(target_os = "windows")]
+            if !wifi.get() && !cable.switch_mode(true) {
+                return;
+            }
+            send.reset();
+            status_open.set(false);
+            sending.set(false);
+            return;
         }
         #[cfg(target_os = "windows")]
-        cable.enable(wifi_active);
-        mode.set(!wifi_active);
-        reset_scroll.set(0.);
+        if !wifi.get() {
+            if !cable.switch_mode(false) {
+                return;
+            }
+            transition.set(true);
+            let (sending, transition, cable, status_open) = (
+                sending.clone(),
+                transition.clone(),
+                cable.clone(),
+                status_open.clone(),
+            );
+            mode_tasks.spawn(async move {
+                cable.wait_for_worker().await;
+                status_open.set(false);
+                sending.set(true);
+                transition.set(false);
+            });
+            return;
+        }
+        status_open.set(false);
+        sending.set(true);
     });
+    let themes = cx.ui.theme().clone();
     cx.render(
-        backdrop(cx, glass).child(titlebar::view(cx)).child(
-            scroll(offset)
-                .w_full()
-                .grow()
-                .min_h(0.)
-                .scrollbar(true)
-                .child(
-                    column()
-                        .w_full()
-                        .shrink_0()
-                        .p(24.)
-                        .gap(8.)
-                        .items_center()
-                        .justify_center()
-                        .reactive_style(move || {
-                            Styles::new().min_h((viewport.get().1 - titlebar::HEIGHT).max(0.))
-                        })
-                        .child(
-                            column()
-                                .w_full()
-                                .shrink_0()
-                                .items_center()
-                                .gap(24.)
-                                .child(wordmark())
-                                .child(content),
-                        )
-                        .child(mode_switch),
-                ),
-        ),
+        backdrop(glass, themes.clone())
+            .child(titlebar::view(
+                cx,
+                #[cfg(target_os = "windows")]
+                trusted_trigger,
+                status,
+            ))
+            .child(dashboard::view(
+                themes,
+                heading,
+                content,
+                history.view(),
+                row()
+                    .items_center()
+                    .gap(4.)
+                    .child(transport)
+                    .child(mode_switch),
+            ))
+            .child(toast),
     );
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     let workers = cable_ui::Workers::default();
+    #[cfg(target_os = "windows")]
+    let trust = trusted_ui::open();
+    #[cfg(target_os = "windows")]
+    let trust_workers = trusted_ui::Workers::default();
     let wifi_worker = WifiWorker::default();
-    let glass = native_glass();
+    let send_worker = send_ui::Worker::default();
     let result = Application::new()
         .font(material::roboto()?)
         .window(WindowOptions {
-            title: "SEAM".into(),
-            width: 480.,
-            height: 480.,
-            min_size: Some((360., 380.)),
+            title: APP_NAME.into(),
+            width: 860.,
+            height: 400.,
+            min_size: Some((824., 400.)),
             titlebar: Titlebar::Hidden,
-            glass,
+            transparent: acrylic::transparent_window(),
             ..Default::default()
         })
         .run(|cx| {
             receive_screen(
                 cx,
-                glass.is_some(),
                 wifi_worker.clone(),
+                send_worker.clone(),
                 #[cfg(target_os = "windows")]
                 workers.clone(),
+                #[cfg(target_os = "windows")]
+                trust.clone(),
+                #[cfg(target_os = "windows")]
+                trust_workers.clone(),
             )
         });
     wifi_worker.shutdown();
+    send_worker.shutdown();
     #[cfg(target_os = "windows")]
     workers.shutdown();
+    #[cfg(target_os = "windows")]
+    trust_workers.shutdown();
     result
 }

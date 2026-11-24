@@ -1,7 +1,12 @@
-use zgx::canvas::{Canvas, LineCap, LineJoin, Path, Stroke};
+use std::f32::consts::FRAC_PI_2;
+use std::rc::Rc;
+
+use zgx::canvas::{Brush, Canvas, GradientStop, LineCap, LineJoin, Path, Point, Stroke};
 use zgx::compose::prelude::*;
-use zgx::scene::Color;
-use zgx_desktop::{FontData, Glass, WindowContext};
+use zgx::reactive::Signal;
+use zgx::scene::{BoxShadow, Color, Rect, Transform};
+use zgx::theme::Themes;
+use zgx_desktop::FontData;
 
 const FONT_FAMILY: &str = "Roboto";
 
@@ -9,77 +14,102 @@ const INK: Color = Color(16, 16, 16, 255);
 const PAPER: Color = Color(250, 250, 250, 255);
 const MUTED: Color = Color(189, 189, 189, 255);
 const CONTROL: Color = Color(39, 39, 39, 255);
-const EDGE: Color = Color(119, 119, 119, 255);
 
 pub(crate) fn roboto() -> Result<FontData, &'static str> {
     FontData::new(include_bytes!("../assets/Roboto.ttf").as_slice())
 }
 
-pub(crate) fn native_glass() -> Option<Glass> {
-    #[cfg(windows)]
-    {
-        #[repr(C)]
-        struct Version {
-            size: u32,
-            major: u32,
-            minor: u32,
-            build: u32,
-            platform: u32,
-            service_pack: [u16; 128],
-        }
-
-        #[link(name = "ntdll")]
-        unsafe extern "system" {
-            fn RtlGetVersion(version: *mut Version) -> i32;
-        }
-
-        let mut version = Version {
-            size: size_of::<Version>() as u32,
-            major: 0,
-            minor: 0,
-            build: 0,
-            platform: 0,
-            service_pack: [0; 128],
-        };
-        (unsafe { RtlGetVersion(&mut version) } == 0
-            && (version.major, version.build) >= (10, 22621))
-            .then(|| Glass::new(zgx_desktop::GlassMaterial::Hud))
-    }
-    #[cfg(not(windows))]
-    None
+fn opaque_material(themes: &Themes) -> bool {
+    let preferences = themes.system_preferences();
+    preferences.increased_contrast || preferences.reduced_transparency
 }
 
-pub(crate) fn backdrop(cx: &WindowContext, native_glass: bool) -> View {
-    let theme = cx.ui.theme().clone();
+const fn neutral_stop(offset: f32, value: u8, alpha: u8) -> GradientStop {
+    GradientStop {
+        offset,
+        color: Color(value, value, value, alpha),
+    }
+}
+
+pub(crate) fn backdrop(acrylic: Signal<bool>, themes: Rc<Themes>) -> View {
     column()
         .w_full()
         .h_full()
         .font_family(FONT_FAMILY)
         .reactive_style(move || {
-            let preferences = theme.system_preferences();
-            Styles::new().bg(
-                if native_glass
-                    && !preferences.reduced_transparency
-                    && !preferences.increased_contrast
-                {
-                    Color(16, 16, 16, 192)
-                } else {
-                    INK
-                },
-            )
+            if opaque_material(&themes) {
+                Styles::new().bg(INK)
+            } else {
+                let alpha = if acrylic.get() { 144 } else { 255 };
+                Styles::new().bg_radial(
+                    (0.5, 0.46),
+                    1.,
+                    [neutral_stop(0., 43, alpha), neutral_stop(1., 16, alpha)],
+                )
+            }
         })
 }
 
-pub(crate) fn pane(content: View) -> View {
+pub(crate) fn pane(content: View, themes: Rc<Themes>) -> View {
+    const RADIUS: f32 = 22.;
+    let rim_themes = themes.clone();
+    let rim = canvas(move |(width, height)| {
+        let mut drawing = Canvas::new();
+        if width <= 1. || height <= 1. {
+            return drawing;
+        }
+        let bounds = Rect::new(0.5, 0.5, width - 1., height - 1.);
+        let Ok(path) = Path::rounded_rect(bounds, RADIUS - 0.5) else {
+            return drawing;
+        };
+        let brush = if opaque_material(&rim_themes) {
+            Color(119, 119, 119, 255).into()
+        } else {
+            Brush::linear(
+                Point::new(0., 0.),
+                Point::new(0., height),
+                [
+                    neutral_stop(0., 119, 255),
+                    neutral_stop(0.42, 71, 255),
+                    neutral_stop(1., 57, 255),
+                ],
+            )
+            .expect("valid pane rim gradient")
+        };
+        drawing.stroke(path, brush, Stroke::default());
+        drawing
+    })
+    .absolute()
+    .top(0.)
+    .right(0.)
+    .bottom(0.)
+    .left(0.)
+    .pointer_events(false);
+
     column()
         .w_full()
-        .max_w(400.)
-        .p(24.)
-        .gap(24.)
-        .rounded(22.)
-        .bg(Color(30, 30, 30, 230))
-        .border(1.)
-        .border_color(Color(250, 250, 250, 46))
+        .p(17.)
+        .gap(16.)
+        .relative()
+        .rounded(RADIUS)
+        .reactive_style(move || {
+            if opaque_material(&themes) {
+                Styles::new().bg(Color(36, 36, 36, 255))
+            } else {
+                Styles::new()
+                    .bg_gradient(
+                        FRAC_PI_2,
+                        [neutral_stop(0., 53, 189), neutral_stop(1., 30, 189)],
+                    )
+                    .shadows([BoxShadow {
+                        color: Color(0, 0, 0, 80),
+                        offset: Transform { x: 0., y: 3. },
+                        blur_radius: 5.,
+                        spread: 0.,
+                    }])
+            }
+        })
+        .child(rim)
         .child(content)
 }
 
@@ -119,7 +149,7 @@ pub(crate) fn wordmark() -> View {
     .size(MARK_WIDTH, MARK_HEIGHT)
     .translate(0., CAP_CENTER_OFFSET);
     row().shrink_0().gap(8.).items_center().child(mark).child(
-        text("SEAM")
+        text(crate::APP_NAME.to_ascii_uppercase())
             .text_size(14.)
             .font_weight(600)
             .letter_spacing(2.)
@@ -130,8 +160,8 @@ pub(crate) fn wordmark() -> View {
 pub(crate) fn headline(label: &str) -> View {
     text(label)
         .heading(1)
-        .text_size(28.)
-        .font_weight(600)
+        .text_size(24.)
+        .font_weight(500)
         .text_color(PAPER)
         .text_wrap(true)
 }
@@ -140,63 +170,45 @@ pub(crate) fn metadata(view: View) -> View {
     view.text_size(14.).text_color(MUTED).text_wrap(true)
 }
 
-pub(crate) fn secondary(label: &str) -> View {
-    action(text(label), false)
+pub(crate) fn primary_action(label: &str) -> View {
+    action_button(text(label))
+        .w_full()
+        .bg(Color(255, 255, 255, 255))
+        .text_color(INK)
+        .hover(|s| s.bg(Color(232, 232, 232, 255)))
+        .active(|s| s.bg(Color(217, 217, 217, 255)))
+        .disabled_style(|s| s.bg(CONTROL).text_color(MUTED))
 }
 
-pub(crate) fn action(label: View, primary: bool) -> View {
-    let (fill, ink, border, hover, active) = if primary {
-        (PAPER, INK, PAPER, Color(224, 224, 224, 255), MUTED)
-    } else {
-        (
-            CONTROL,
-            PAPER,
-            EDGE,
-            Color(53, 53, 53, 255),
-            Color(64, 64, 64, 255),
-        )
-    };
-    button()
-        .h(44.)
-        .px(16.)
-        .rounded(11.)
-        .bg(fill)
-        .border(1.)
-        .border_color(border)
-        .text_color(ink)
-        .justify_center()
-        .hover(move |s| s.bg(hover))
-        .active(move |s| s.bg(active))
-        .focus(|s| s.outline(2., PAPER).outline_offset(3.))
-        .disabled_style(|s| s.bg(CONTROL).text_color(MUTED).border_color(EDGE))
-        .child(
-            label
-                .text_size(16.)
-                .font_weight(if primary { 600 } else { 400 }),
-        )
+pub(crate) fn receive_primary(label: &str) -> View {
+    primary_action(label).w(144.)
 }
 
-pub(crate) fn mode_action(label: View) -> View {
-    button()
-        .h(44.)
-        .px(16.)
-        .rounded(11.)
-        .border(0.)
+pub(crate) fn receive_actions(primary: View, choose: View) -> View {
+    row().gap(8.).items_center().child(primary).child(choose)
+}
+
+pub(crate) fn quiet_action(label: View) -> View {
+    action_button(label.text_size(14.))
+        .h(36.)
+        .px(12.)
         .bg(Color(0, 0, 0, 0))
+        .text_color(MUTED)
         .hover(|s| s.bg(CONTROL))
         .active(|s| s.bg(Color(53, 53, 53, 255)))
-        .focus(|s| s.outline(2., PAPER).outline_offset(3.))
-        .child(label.text_size(16.).text_color(MUTED))
 }
 
-pub(crate) fn field(view: View) -> View {
-    view.h(44.)
+fn action_button(label: View) -> View {
+    button()
+        .h(44.)
+        .shrink_0()
         .px(16.)
-        .rounded(11.)
-        .bg(CONTROL)
-        .border(1.)
-        .border_color(EDGE)
-        .text_size(16.)
-        .text_color(PAPER)
+        .rounded(10.)
+        .border(0.)
+        .items_center()
+        .justify_center()
         .focus(|s| s.outline(2., PAPER).outline_offset(3.))
+        .text_size(16.)
+        .font_weight(500)
+        .child(label)
 }

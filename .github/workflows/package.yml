@@ -1,0 +1,106 @@
+name: Package desktop candidates
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            arch: X64
+            platform: windows-x64
+            extension: exe
+          - os: macos-15
+            arch: ARM64
+            platform: macos-arm64
+            extension: dmg
+          - os: ubuntu-24.04
+            arch: X64
+            platform: ubuntu-24.04-amd64
+            extension: deb
+    steps:
+      - name: Check runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: test "$RUNNER_ARCH" = "$EXPECTED_ARCH"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libdbus-1-dev libwayland-dev
+          sudo apt-get install -y --no-install-recommends dpkg-dev desktop-file-utils
+
+      - name: Install repository-pinned Rust toolchain
+        run: rustup toolchain install --no-self-update --profile minimal --component rustfmt,clippy
+
+      - name: Build desktop binary
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: '0'
+        run: cargo build --locked --release --manifest-path apps/desktop/Cargo.toml
+
+      - name: Read candidate version
+        id: candidate
+        env:
+          PACKAGE_PLATFORM: ${{ matrix.platform }}
+          PACKAGE_EXTENSION: ${{ matrix.extension }}
+        run: |
+          package_id=$(cargo pkgid --locked --manifest-path apps/desktop/Cargo.toml)
+          version=${package_id##*#}
+          version=${version##*@}
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a numeric crate version, got: $version" >&2
+            exit 1
+          fi
+          stem="sliploom-$version-$PACKAGE_PLATFORM-unsigned-test"
+          printf 'version=%s\nstem=%s\nfilename=%s.%s\n' "$version" "$stem" "$stem" "$PACKAGE_EXTENSION" >> "$GITHUB_OUTPUT"
+
+      - name: Package and verify Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ steps.candidate.outputs.version }}
+          PACKAGE_FILENAME: ${{ steps.candidate.outputs.filename }}
+        run: |
+          choco install nsis --version=3.12.0 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Chocolatey could not install NSIS" }
+          ./packaging/windows.ps1 $env:PACKAGE_VERSION (Join-Path $env:RUNNER_TEMP "sliploom-packages/$env:PACKAGE_FILENAME")
+
+      - name: Package and verify macOS disk image
+        if: runner.os == 'macOS'
+        env:
+          PACKAGE_VERSION: ${{ steps.candidate.outputs.version }}
+          PACKAGE_FILENAME: ${{ steps.candidate.outputs.filename }}
+        run: bash packaging/macos.sh "$PACKAGE_VERSION" "$RUNNER_TEMP/sliploom-packages/$PACKAGE_FILENAME"
+
+      - name: Package and verify Ubuntu package
+        if: runner.os == 'Linux'
+        env:
+          PACKAGE_VERSION: ${{ steps.candidate.outputs.version }}
+          PACKAGE_FILENAME: ${{ steps.candidate.outputs.filename }}
+        run: bash packaging/linux.sh "$PACKAGE_VERSION" "$RUNNER_TEMP/sliploom-packages/$PACKAGE_FILENAME"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.candidate.outputs.stem }}
+          path: |
+            ${{ runner.temp }}/sliploom-packages/${{ steps.candidate.outputs.filename }}
+            ${{ runner.temp }}/sliploom-packages/${{ steps.candidate.outputs.filename }}.sha256
+          if-no-files-found: error
+          compression-level: 0
