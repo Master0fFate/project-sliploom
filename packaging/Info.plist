@@ -7,7 +7,7 @@
     <key>CFBundleName</key>
     <string>Sliploom</string>
     <key>CFBundleExecutable</key>
-    <string>seam-desktop</string>
+    <string>sliploom</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>NSLocalNetworkUsageDescription</key>

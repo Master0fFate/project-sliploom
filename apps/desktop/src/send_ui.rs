@@ -40,6 +40,13 @@ enum Activity {
     Cancelling,
 }
 
+enum WifiBlock {
+    Files,
+    MissingCode,
+    InvalidCode,
+    OlderCode,
+}
+
 enum TransferOutcome {
     Wifi(BatchOutcome),
     Legacy(SendOutcome),
@@ -175,7 +182,7 @@ impl Card {
                     "Connect and unlock your phone, then select USB File transfer.".into()
                 };
             }
-            "Open Receive on your phone for a one-time code.".into()
+            "Open Receive on the receiving device for a one-time code.".into()
         }))
         .live(Live::Polite)
     }
@@ -224,7 +231,7 @@ impl Card {
         self.activity.set(Activity::Checking);
         self.cable_target.set(None);
         self.status.set("Checking USB File transfer…".into());
-        let Ok(rx) = self.worker.spawn("seam-check-mtp", mtp::detect) else {
+        let Ok(rx) = self.worker.spawn("sliploom-check-mtp", mtp::detect) else {
             self.finish("Couldn’t start the USB check.".into());
             return;
         };
@@ -321,12 +328,17 @@ impl Card {
             })
     }
 
-    fn wifi_ready(&self) -> bool {
+    fn wifi_readiness(&self) -> Result<Ipv4Addr, WifiBlock> {
         let count = self.files.with(Vec::len);
-        count > 0
-            && self
-                .destination()
-                .is_some_and(|(_, batch)| batch || count == 1)
+        if !(1..=MAX_FILES).contains(&count) {
+            return Err(WifiBlock::Files);
+        }
+        match self.destination() {
+            Some((address, batch)) if batch || count == 1 => Ok(address),
+            Some(_) => Err(WifiBlock::OlderCode),
+            None if self.code.with(|code| code.trim().is_empty()) => Err(WifiBlock::MissingCode),
+            None => Err(WifiBlock::InvalidCode),
+        }
     }
 
     fn pick_files(&self) {
@@ -417,7 +429,7 @@ impl Card {
             }
             return;
         }
-        if !self.wifi_ready() {
+        if self.wifi_readiness().is_err() {
             return;
         }
         let mut invite = None;
@@ -456,11 +468,17 @@ impl Card {
         });
         let progress = Arc::new(Progress::default());
         let worker_progress = progress.clone();
-        let Ok(rx) = self
-            .worker
-            .spawn("seam-send", move |cancel| work(cancel, &worker_progress))
-        else {
-            self.fail_transfer("Couldn’t start the sender.");
+        let Ok(rx) = self.worker.spawn("sliploom-send", move |cancel| {
+            work(cancel, &worker_progress)
+        }) else {
+            let one_time = !cable;
+            #[cfg(target_os = "windows")]
+            let one_time = one_time && self.active_trusted_label.with(Option::is_none);
+            self.fail_transfer(if one_time {
+                "Couldn’t start the sender. Get a new one-time code from the receiver."
+            } else {
+                "Couldn’t start the sender."
+            });
             return;
         };
         let card = self.clone();
@@ -565,11 +583,10 @@ impl Card {
 
     pub(crate) fn view(&self) -> View {
         let files = self.files.clone();
+        let file_mode = self.clone();
         let pick_file = self.clone();
-        let file_busy = self.clone();
         let transport = self.clone();
         let controls = self.clone();
-        let destination = self.clone();
         column()
             .gap(8.)
             .child(
@@ -577,9 +594,22 @@ impl Card {
                     .gap(8.)
                     .items_center()
                     .child(
-                        quiet_action(text("Choose files"))
-                            .disabled_when(move || file_busy.busy())
-                            .on_click(move || pick_file.pick_files()),
+                        switch(
+                            move || !file_mode.over_cable() && file_mode.files.with(Vec::is_empty),
+                            move |primary, _| {
+                                let busy = pick_file.clone();
+                                let action = pick_file.clone();
+                                let button = if primary {
+                                    receive_primary("Choose files")
+                                } else {
+                                    quiet_action(text("Choose files"))
+                                };
+                                button
+                                    .disabled_when(move || busy.busy())
+                                    .on_click(move || action.pick_files())
+                            },
+                        )
+                        .display_contents(),
                     )
                     .child(
                         metadata(text_signal(move || {
@@ -612,23 +642,14 @@ impl Card {
                         #[cfg(not(target_os = "windows"))]
                         let _ = cable;
                         if active {
-                            return controls.cancel_button();
+                            return column()
+                                .gap(8.)
+                                .child(controls.cancel_button())
+                                .child(controls.wifi_destination_view());
                         }
                         controls.entry()
                     },
                 )
-                .display_contents(),
-            )
-            .child(
-                switch(move || destination.over_cable(), {
-                    let destination = self.clone();
-                    move |cable, _| {
-                        if cable {
-                            return div().hidden();
-                        }
-                        destination.wifi_destination_view()
-                    }
-                })
                 .display_contents(),
             )
             .child(inline_status(self.status.clone()))
@@ -636,29 +657,48 @@ impl Card {
 
     fn wifi_destination_view(&self) -> View {
         let destination = self.clone();
-        metadata(text_signal(move || {
-            #[cfg(target_os = "windows")]
-            if let Some(label) = destination.active_trusted_label.get() {
-                return format!("Destination: {label}");
+        switch(
+            move || destination.wifi_hint(),
+            move |hint, _| match hint {
+                Some(hint) => metadata(text(hint)),
+                None => div().hidden(),
+            },
+        )
+        .display_contents()
+    }
+
+    fn wifi_hint(&self) -> Option<String> {
+        #[cfg(target_os = "windows")]
+        if let Some(label) = self.active_trusted_label.get() {
+            return Some(format!("Destination: {label}"));
+        }
+        if let Some(address) = self.active_target.get() {
+            return Some(format!("Destination: {address}"));
+        }
+        let hint = match self.wifi_readiness() {
+            Ok(address) => return Some(format!("Ready for {address}")),
+            Err(WifiBlock::Files) => return None,
+            Err(WifiBlock::OlderCode) => {
+                "This older code can send only one image or PDF. Choose one file."
             }
-            if let Some(address) = destination.active_target.get() {
-                format!("Destination: {address}")
-            } else if let Some((address, batch)) = destination.destination() {
-                if batch {
-                    format!("Ready for {address}")
-                } else {
-                    "Older Wi-Fi code: one image or PDF only.".into()
+            Err(WifiBlock::InvalidCode) => {
+                "Invalid code. Paste the full one-time code from Receive."
+            }
+            Err(WifiBlock::MissingCode) => {
+                if !self.status.with(String::is_empty) {
+                    return None;
                 }
-            } else if !destination.code.with(String::is_empty) {
-                "Enter a valid one-time code.".into()
-            } else {
                 #[cfg(target_os = "windows")]
-                if destination.trusted.available() {
-                    return "Use a one-time code or send from Trusted devices.".into();
+                if self.trusted.available() {
+                    return Some(
+                        "Use the full code or QR from Receive, or send from Trusted devices."
+                            .into(),
+                    );
                 }
-                "Use the code or QR from Receive on your phone.".into()
+                "Paste the full code or open the QR image from Receive."
             }
-        }))
+        };
+        Some(hint.into())
     }
 
     fn cancel_button(&self) -> View {
@@ -721,6 +761,7 @@ impl Card {
 
     fn entry(&self) -> View {
         let scanned = self.scanned.clone();
+        let has_files = self.files.clone();
         let entry = self.clone();
         let ready = self.clone();
         let send = self.clone();
@@ -748,36 +789,46 @@ impl Card {
                                 );
                         }
                         let read_only = entry.clone();
-                        row()
-                            .gap(8.)
-                            .items_center()
+                        column()
+                            .gap(4.)
+                            .child(metadata(text("One-time code")))
                             .child(
-                                text_input("One-time code", entry.code.clone())
-                                    .secure(true)
-                                    .autocorrect(false)
-                                    .placeholder("One-time code")
-                                    .read_only_when(move || read_only.busy())
-                                    .grow()
-                                    .min_w(0.)
-                                    .h(36.)
-                                    .rounded(8.)
-                                    .bg(Color(0, 0, 0, 48))
-                                    .border_color(Color(118, 118, 118, 192))
-                                    .focus(|s| s.border_color(Color(176, 176, 176, 255))),
-                            )
-                            .child(
-                                quiet_action(text("Open QR image"))
-                                    .disabled_when(move || busy.busy())
-                                    .on_click(move || action.pick_qr()),
+                                row()
+                                    .gap(8.)
+                                    .items_center()
+                                    .child(
+                                        text_input("One-time code", entry.code.clone())
+                                            .secure(true)
+                                            .autocorrect(false)
+                                            .read_only_when(move || read_only.busy())
+                                            .grow()
+                                            .min_w(0.)
+                                            .h(36.)
+                                            .rounded(8.)
+                                            .bg(Color(0, 0, 0, 48))
+                                            .border_color(Color(118, 118, 118, 192))
+                                            .focus(|s| s.border_color(Color(176, 176, 176, 255))),
+                                    )
+                                    .child(
+                                        quiet_action(text("Open QR image"))
+                                            .disabled_when(move || busy.busy())
+                                            .on_click(move || action.pick_qr()),
+                                    ),
                             )
                     },
                 )
                 .display_contents(),
             )
-            .child(
-                receive_primary("Send")
-                    .disabled_when(move || ready.busy() || !ready.wifi_ready())
-                    .on_click(move || send.start(false)),
+            .child(self.wifi_destination_view())
+            .child_when(
+                move || (!has_files.with(Vec::is_empty)).then_some(()),
+                move |(), _| {
+                    let ready = ready.clone();
+                    let send = send.clone();
+                    receive_primary("Send")
+                        .disabled_when(move || ready.busy() || ready.wifi_readiness().is_err())
+                        .on_click(move || send.start(false))
+                },
             )
     }
 }
@@ -797,19 +848,25 @@ fn batch_message(outcome: BatchOutcome, trusted: bool) -> String {
         BatchStatus::Failed if trusted => {
             "Send ended early. Check the receiver before trying again.".into()
         }
-        BatchStatus::Failed => "Send ended early. Get a new code to try again.".into(),
+        BatchStatus::Failed => "Send ended early.".into(),
         BatchStatus::TooLarge => format!(
             "Choose up to {MAX_FILES} files totaling no more than {}.",
             byte_size(MAX_BATCH_BYTES)
         ),
         BatchStatus::Unsupported => "Choose readable regular files with safe filenames.".into(),
     };
-    let check = if unconfirmed {
+    let next = if unconfirmed {
         "One file may have been saved without confirmation. Check the receiver before retrying."
+    } else if !trusted && matches!(status, BatchStatus::Cancelled | BatchStatus::Failed) {
+        match confirmed {
+            0 => "Get a new one-time code from the receiver.",
+            confirmed if confirmed < total => "Choose only the remaining files to send.",
+            _ => "",
+        }
     } else {
         ""
     };
-    [counts.as_str(), &detail, check]
+    [counts.as_str(), &detail, next]
         .into_iter()
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
@@ -818,13 +875,17 @@ fn batch_message(outcome: BatchOutcome, trusted: bool) -> String {
 
 fn legacy_message(outcome: SendOutcome) -> String {
     match outcome {
-        SendOutcome::Saved(bytes) => format!("Phone confirmed it saved the file ({bytes} bytes)."),
-        SendOutcome::Unconfirmed => {
-            "Couldn’t confirm it was saved. Check your phone before retrying.".into()
+        SendOutcome::Saved(bytes) => {
+            format!("Receiver confirmed it saved the file ({bytes} bytes).")
         }
-        SendOutcome::Cancelled => "Send cancelled.".into(),
+        SendOutcome::Unconfirmed => {
+            "Couldn’t confirm it was saved. Check the receiver before retrying.".into()
+        }
+        SendOutcome::Cancelled => {
+            "Send cancelled. Get a new one-time code from the receiver.".into()
+        }
         SendOutcome::Failed => {
-            "Couldn’t send. Check Wi-Fi and get a new code from your phone.".into()
+            "Couldn’t send. Check Wi-Fi and get a new one-time code from the receiver.".into()
         }
         SendOutcome::TooLarge => "This file is too large to send.".into(),
         SendOutcome::Unsupported => "Choose a supported image or PDF.".into(),
@@ -835,7 +896,7 @@ async fn scan_image(path: PathBuf) -> Result<SendInvite, &'static str> {
     const FAILED: &str = "Couldn’t read the QR image.";
     let (tx, rx) = mpsc::channel();
     thread::Builder::new()
-        .name("seam-read-qr".into())
+        .name("sliploom-read-qr".into())
         .spawn(move || {
             let _ = tx.send(read_invite(&path));
         })

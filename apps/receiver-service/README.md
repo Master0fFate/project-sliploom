@@ -1,4 +1,4 @@
-# SEAM localhost file proof
+# Sliploom localhost file proof
 
 Build from the workspace root with `cargo build --locked`. The toolchain pins Rust 1.99.0 without forcing a host. Windows x64 MSVC is tested; other hosts are unverified. Run the receiver as a bounded background child, then run the sender using the address printed in the receiver's `LISTEN` line:
 
@@ -14,7 +14,7 @@ target/debug/dev-sender.exe TARGET TLS_NAME INPUT CLIENT_CERT CLIENT_KEY SERVER_
 
 ## Envelope v1
 
-Over TLS, the sender writes `53 45 41 4d 01` (`SEAM` and version byte `1`), an unsigned 64-bit big-endian payload length, exactly that many file bytes, and the 32 raw SHA-256 bytes of the payload. It then sends TLS `close_notify` on its write side. The receiver requires that authenticated end-of-stream with no extra data. A session carries one file of 0–64 MiB, inclusive, streamed through a 16 KiB application buffer. The sender supplies no destination name.
+Over TLS, the sender writes `53 45 41 4d 01` (the legacy `SEAM` wire identifier and version byte `1`), an unsigned 64-bit big-endian payload length, exactly that many file bytes, and the 32 raw SHA-256 bytes of the payload. It then sends TLS `close_notify` on its write side. The receiver requires that authenticated end-of-stream with no extra data. A session carries one file of 0–64 MiB, inclusive, streamed through a 16 KiB application buffer. The sender supplies no destination name.
 
 The receiver stages data beside `OUTPUT`; after length and digest verification it syncs the stage and publishes without replacing an existing path. Normal pre-publication errors discard the stage. After publication it sends `41 43 4b 01` (`ACK` and version byte `1`), the verified 32-byte digest, and TLS `close_notify`. The sender reports success only after verifying this complete response. If sending confirmation fails after publication, the receiver exits nonzero with `File published; confirmation could not be sent` and leaves the file in place. If the sender cannot finish sending the digest and TLS end-of-stream or verify the complete response, it exits nonzero with `Publication unconfirmed; check the destination before retrying`. This does not tell you whether the file was published. Process termination can leave a stage; crash durability is not guaranteed.
 
@@ -38,7 +38,7 @@ import time
 subprocess.run(["cargo", "build", "--locked", "--target-dir", "target"], check=True)
 bins = Path("target/debug").resolve()
 
-with tempfile.TemporaryDirectory(prefix="seam-smoke-") as temp:
+with tempfile.TemporaryDirectory(prefix="sliploom-smoke-") as temp:
     root = Path(temp)
 
     def openssl(*args):
@@ -47,12 +47,12 @@ with tempfile.TemporaryDirectory(prefix="seam-smoke-") as temp:
     for role in ("server", "client"):
         ca = f"{role}-ca"
         openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
-                "-noenc", "-days", "1", "-subj", f"/CN=SEAM Smoke {role} CA",
+                "-noenc", "-days", "1", "-subj", f"/CN=Sliploom Smoke {role} CA",
                 "-addext", "basicConstraints=critical,CA:TRUE",
                 "-addext", "keyUsage=critical,keyCertSign",
                 "-keyout", f"{ca}.key", "-out", f"{ca}.pem")
         openssl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
-                "-noenc", "-subj", f"/CN=SEAM Smoke {role}",
+                "-noenc", "-subj", f"/CN=Sliploom Smoke {role}",
                 "-keyout", f"{role}.key", "-out", f"{role}.csr")
         extensions = f"basicConstraints=critical,CA:FALSE\nextendedKeyUsage={role}Auth\n"
         if role == "server":
@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix="seam-smoke-") as temp:
                 "-extfile", "leaf.ext", "-out", f"{role}.pem")
 
     fixture = root / "fixture.txt"
-    fixture.write_bytes(b"SEAM localhost smoke fixture\n")
+    fixture.write_bytes(b"Sliploom localhost smoke fixture\n")
     expected_hash = hashlib.sha256(fixture.read_bytes()).hexdigest()
     sentinel = b"Existing output must stay unchanged.\n"
 
@@ -120,5 +120,5 @@ with tempfile.TemporaryDirectory(prefix="seam-smoke-") as temp:
             print(f"occupied: receiver={receiver_exit}, sender={sender.returncode}, "
                   "sentinel unchanged, no staging file")
 '@ | python -I -
-if ($LASTEXITCODE -ne 0) { throw 'SEAM CLI smoke failed' }
+if ($LASTEXITCODE -ne 0) { throw 'Sliploom CLI smoke failed' }
 ```

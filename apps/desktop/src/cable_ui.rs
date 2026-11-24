@@ -20,7 +20,7 @@ use crate::history::History;
 use crate::material::{
     headline, metadata, primary_action, quiet_action, receive_actions, receive_primary,
 };
-use crate::{destination_label, pick_destination};
+use crate::{destination_label, inline_status, pick_destination};
 
 const TICK: Duration = Duration::from_millis(100);
 const DECISION_TIME: Duration = Duration::from_secs(30);
@@ -118,6 +118,7 @@ pub(crate) struct Cable {
     busy: Signal<bool>,
     picking: Signal<bool>,
     folder_error: Signal<String>,
+    folder_warning: Signal<String>,
     dialogs: FileDialogs,
     prompt: Signal<Option<Prompt>>,
     receipt: Signal<Option<ReceiptOutcome>>,
@@ -134,6 +135,7 @@ impl Cable {
         history: History,
         folder: Signal<Option<PathBuf>>,
         default_folder: Signal<Option<PathBuf>>,
+        folder_warning: Signal<String>,
     ) -> Self {
         let runtime = &cx.ui.runtime;
         let cable = Self {
@@ -144,6 +146,7 @@ impl Cable {
             busy: runtime.signal(false),
             picking: runtime.signal(false),
             folder_error: runtime.signal(String::new()),
+            folder_warning,
             dialogs: cx.dialogs.clone(),
             prompt: runtime.signal(None),
             receipt: runtime.signal(None),
@@ -195,14 +198,10 @@ impl Cable {
         self.tasks.spawn(async move {
             ui.wait_for_worker().await;
             let current = ui.folder.get().or_else(|| ui.default_folder.get());
-            match pick_destination(ui.dialogs.clone(), current).await {
-                Ok(Some(path)) => {
-                    ui.folder.set(Some(path));
-                }
-                Ok(None) => {}
-                Err(message) => {
-                    ui.folder_error.set(message.into());
-                }
+            if let Err(message) =
+                pick_destination(ui.dialogs.clone(), current, &ui.folder, &ui.folder_warning).await
+            {
+                ui.folder_error.set(message.into());
             }
             ui.picking.set(false);
             ui.start();
@@ -222,7 +221,7 @@ impl Cable {
         let worker_phase = phase.clone();
         let folder = self.folder.get();
         let handle = thread::Builder::new()
-            .name("seam-cable".into())
+            .name("sliploom-cable".into())
             .spawn(move || run(&flag, &worker_phase, &tx, folder.as_deref()));
         match handle {
             Ok(handle) => {
@@ -339,6 +338,7 @@ impl Cable {
     pub(crate) fn has_status_update(&self) -> bool {
         self.retry.get()
             || !self.folder_error.with(String::is_empty)
+            || !self.folder_warning.with(String::is_empty)
             || self.receipt.with(Option::is_some)
     }
 
@@ -372,6 +372,7 @@ impl Cable {
                     metadata(text_signal(move || error.get())).live(Live::Polite)
                 },
             )
+            .child(inline_status(self.folder_warning.clone()))
     }
 
     pub(crate) fn view(&self) -> View {
@@ -383,7 +384,9 @@ impl Cable {
             move || prompt.get(),
             move |prompt, _| {
                 if let Some(prompt) = prompt {
-                    return ui.prompt_view(prompt);
+                    return ui
+                        .prompt_view(prompt)
+                        .child(inline_status(ui.folder_warning.clone()));
                 }
                 let actions = ui.clone();
                 let chooser = ui.clone();
@@ -413,7 +416,7 @@ impl Cable {
                                                 .clone()
                                                 .or_else(|| ui.default_folder.get());
                                             let _ = thread::Builder::new()
-                                                .name("seam-open-folder".into())
+                                                .name("sliploom-open-folder".into())
                                                 .spawn(move || {
                                                     if let Ok(folder) =
                                                         open_destination(selected.as_deref(), false)
@@ -435,6 +438,7 @@ impl Cable {
                         ui.folder.clone(),
                         ui.default_folder.clone(),
                     ))
+                    .child(inline_status(ui.folder_warning.clone()))
             },
         )
         .display_contents()
@@ -486,8 +490,19 @@ pub(crate) fn open_destination(
 ) -> io::Result<Folder> {
     match selected {
         Some(path) => private_folder::chosen(path),
-        None => private_folder::open(create_default),
+        None => private_folder::open(crate::APP_NAME, create_default),
     }
+}
+
+pub(crate) fn open_settings_directory(create: bool) -> io::Result<Folder> {
+    private_folder::open(private_folder::SETTINGS_DIRECTORY, create)
+}
+
+pub(crate) fn open_trust_directory(
+    local: &Path,
+    has_legacy_state: impl FnOnce(&Path) -> io::Result<bool>,
+) -> io::Result<Folder> {
+    private_folder::trust(local, has_legacy_state)
 }
 
 fn run(cancel: &AtomicBool, phase: &AtomicU8, tx: &Sender<Event>, selected: Option<&Path>) {
@@ -663,6 +678,7 @@ mod private_folder {
     const REPARSE_POINT: u32 = 0x400;
     const DIRECTORY: u32 = 0x10;
     const PROTECTED_DACL: u16 = 0x1000;
+    pub(super) const SETTINGS_DIRECTORY: &str = "Sliploom Settings";
 
     #[repr(C)]
     struct Guid(u32, u16, u16, [u8; 8]);
@@ -764,6 +780,13 @@ mod private_folder {
             filesystem_size: u32,
         ) -> i32;
         fn CreateDirectoryW(path: *const u16, attributes: *const SecurityAttributes) -> i32;
+        fn CompareStringOrdinal(
+            first: *const u16,
+            first_len: i32,
+            second: *const u16,
+            second_len: i32,
+            ignore_case: i32,
+        ) -> i32;
     }
 
     #[link(name = "shell32")]
@@ -817,12 +840,78 @@ mod private_folder {
         }
     }
 
-    pub(super) fn open(create: bool) -> io::Result<Folder> {
+    pub(super) fn open(name: &str, create: bool) -> io::Result<Folder> {
         let base = known_folder(&LOCAL_APP_DATA)?;
         let profile = known_folder(&PROFILE)?;
         if base == profile || !base.starts_with(&profile) {
             return Err(invalid());
         }
+        let mut directories = lock_local_data(&base)?;
+        let expected = private_descriptor()?;
+        let path = base.join(name);
+        if create {
+            create_private(&path, &expected)?;
+        }
+        let folder = lock_directory(&path, true)?;
+        check_descriptor(&folder, &expected)?;
+        directories.push(folder);
+        Ok(Folder {
+            path,
+            _directories: directories,
+        })
+    }
+
+    pub(super) fn trust(
+        local: &Path,
+        has_legacy_state: impl FnOnce(&Path) -> io::Result<bool>,
+    ) -> io::Result<Folder> {
+        let local = PathBuf::from(native(local)?);
+        let mut directories = lock_local_data(&local)?;
+        let expected = private_descriptor()?;
+        let current = local.join(crate::APP_NAME);
+        let path = current.join("Trust");
+        let current_dir = existing_private(&current, &expected)?;
+        if current_dir.is_some()
+            && let Some(trust_dir) = existing_private(&path, &expected)?
+        {
+            directories.extend(current_dir);
+            directories.push(trust_dir);
+            return Ok(Folder {
+                path,
+                _directories: directories,
+            });
+        }
+
+        let legacy = local.join("SEAM");
+        let legacy_path = legacy.join("Trust");
+        if let Some(legacy_dir) = existing_private(&legacy, &expected)?
+            && let Some(trust_dir) = existing_private(&legacy_path, &expected)?
+            && has_legacy_state(&legacy_path)?
+        {
+            directories.extend([legacy_dir, trust_dir]);
+            return Ok(Folder {
+                path: legacy_path,
+                _directories: directories,
+            });
+        }
+
+        let current_dir = match current_dir {
+            Some(directory) => directory,
+            None => {
+                create_private(&current, &expected)?;
+                lock_private(&current, &expected)?
+            }
+        };
+        create_private(&path, &expected)?;
+        let trust_dir = lock_private(&path, &expected)?;
+        directories.extend([current_dir, trust_dir]);
+        Ok(Folder {
+            path,
+            _directories: directories,
+        })
+    }
+
+    fn lock_local_data(base: &Path) -> io::Result<Vec<File>> {
         let mut components = base.components();
         let root_is_local = match (components.next(), components.next()) {
             (Some(Component::Prefix(prefix)), Some(Component::RootDir)) => {
@@ -839,36 +928,44 @@ mod private_folder {
         {
             return Err(invalid());
         }
-        let mut directories = base
-            .ancestors()
+        base.ancestors()
             .filter(|path| path.parent().is_some())
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
             .map(|path| lock_directory(path, false))
-            .collect::<io::Result<Vec<_>>>()?;
-        let expected = private_descriptor()?;
-        let path = base.join("SEAM");
-        if create {
-            let attributes = SecurityAttributes {
-                length: std::mem::size_of::<SecurityAttributes>() as u32,
-                descriptor: expected.0,
-                inherit: 0,
-            };
-            if unsafe { CreateDirectoryW(wide(path.as_os_str()).as_ptr(), &attributes) } == 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() != io::ErrorKind::AlreadyExists {
-                    return Err(error);
-                }
+            .collect()
+    }
+
+    fn create_private(path: &Path, expected: &Local) -> io::Result<()> {
+        let attributes = SecurityAttributes {
+            length: std::mem::size_of::<SecurityAttributes>() as u32,
+            descriptor: expected.0,
+            inherit: 0,
+        };
+        if unsafe { CreateDirectoryW(wide(path.as_os_str()).as_ptr(), &attributes) } == 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::AlreadyExists {
+                return Err(error);
             }
         }
-        let folder = lock_directory(&path, true)?;
-        check_descriptor(&folder, &expected)?;
-        directories.push(folder);
-        Ok(Folder {
-            path,
-            _directories: directories,
-        })
+        Ok(())
+    }
+
+    fn lock_private(path: &Path, expected: &Local) -> io::Result<File> {
+        let folder = lock_directory(path, true)?;
+        check_chosen_acl(&folder, expected, true, true, false)?;
+        Ok(folder)
+    }
+
+    fn existing_private(path: &Path, expected: &Local) -> io::Result<Option<File>> {
+        let folder = match lock_directory(path, true) {
+            Ok(folder) => folder,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        check_chosen_acl(&folder, expected, true, true, false)?;
+        Ok(Some(folder))
     }
 
     pub(super) fn chosen(input: &Path) -> io::Result<Folder> {
@@ -920,6 +1017,9 @@ mod private_folder {
             if final_dir {
                 let path = PathBuf::from(canonical);
                 native(&path)?;
+                if is_settings_destination(&path) {
+                    return Err(invalid());
+                }
                 return Ok(Folder {
                     path,
                     _directories: directories,
@@ -927,6 +1027,24 @@ mod private_folder {
             }
         }
         Err(invalid())
+    }
+
+    fn is_settings_destination(path: &Path) -> bool {
+        let Ok(base) = known_folder(&LOCAL_APP_DATA) else {
+            return false;
+        };
+        let settings = normalized(&base)
+            .map(PathBuf::from)
+            .unwrap_or(base)
+            .join(SETTINGS_DIRECTORY);
+        let settings = wide(settings.as_os_str());
+        path.ancestors().any(|ancestor| {
+            let ancestor = wide(ancestor.as_os_str());
+            ancestor.len() == settings.len()
+                && unsafe {
+                    CompareStringOrdinal(ancestor.as_ptr(), -1, settings.as_ptr(), -1, 1) == 2
+                }
+        })
     }
 
     fn normalized(path: &Path) -> io::Result<String> {
@@ -1218,6 +1336,9 @@ mod private_folder {
     }
 
     fn invalid() -> io::Error {
-        io::Error::new(io::ErrorKind::PermissionDenied, "not a private SEAM folder")
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "not a private Sliploom folder",
+        )
     }
 }

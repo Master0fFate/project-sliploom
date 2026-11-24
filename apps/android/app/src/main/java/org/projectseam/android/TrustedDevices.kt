@@ -43,11 +43,11 @@ internal class TrustedDevices(context: Context) : Closeable {
     private val store = TrustedPeerStore(app.filesDir)
     private val lock = Any()
     private val random = SecureRandom()
-    private val deadlines = ScheduledThreadPoolExecutor(1) { daemon("SEAM trust deadline", it) }.apply {
+    private val deadlines = ScheduledThreadPoolExecutor(1) { daemon("Sliploom trust deadline", it) }.apply {
         removeOnCancelPolicy = true
     }
-    private val workers = trustExecutor(MAX_INBOUND, "SEAM trust control")
-    private val prompts = trustExecutor(2, "SEAM trust confirmation")
+    private val workers = trustExecutor(MAX_INBOUND, "Sliploom trust control")
+    private val prompts = trustExecutor(2, "Sliploom trust confirmation")
     private val records = LinkedHashMap<String, TrustedRecord>()
     private val calls = HashSet<Call>()
     private var identity: TrustedIdentity? = null
@@ -749,7 +749,7 @@ internal class TrustedDevices(context: Context) : Closeable {
 
     private companion object {
         val activeRuntime = AtomicReference<TrustedDevices?>()
-        val cleanup = Executors.newSingleThreadExecutor { daemon("SEAM trust cleanup", it) }
+        val cleanup = Executors.newSingleThreadExecutor { daemon("Sliploom trust cleanup", it) }
     }
 }
 

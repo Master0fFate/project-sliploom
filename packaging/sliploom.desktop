@@ -2,6 +2,6 @@
 Type=Application
 Name=Sliploom
 Comment=Send and receive files on your local network
-Exec=seam-desktop
+Exec=sliploom
 Terminal=false
 Categories=Network;FileTransfer;

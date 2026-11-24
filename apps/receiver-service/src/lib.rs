@@ -70,7 +70,7 @@ pub fn read_header(mut input: impl Read) -> io::Result<u64> {
     let mut version = [0; VERSION.len()];
     input.read_exact(&mut version)?;
     if version != VERSION {
-        return Err(invalid("unsupported SEAM envelope"));
+        return Err(invalid("unsupported Sliploom envelope"));
     }
     let mut length = [0; 8];
     input.read_exact(&mut length)?;

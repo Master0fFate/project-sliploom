@@ -39,7 +39,7 @@ internal class CableTransfer(private val onStop: (TransferStop) -> Unit) {
             phaseDeadline = now + IDLE_MS
         }
         val socket = LocalSocket()
-        val watchdog = Thread({ watch(socket) }, "SEAM cable timeout").apply {
+        val watchdog = Thread({ watch(socket) }, "Sliploom cable timeout").apply {
             isDaemon = true
             start()
         }

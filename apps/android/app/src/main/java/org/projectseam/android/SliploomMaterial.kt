@@ -77,7 +77,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 
-internal val SeamControlShape = RoundedCornerShape(12.dp)
+internal val SliploomControlShape = RoundedCornerShape(12.dp)
 private val PaneShape = RoundedCornerShape(24.dp)
 private val Ink = Color(0xFF101010)
 private val Paper = Color(0xFFFAFAFA)
@@ -105,7 +105,7 @@ private val LightColors = lightColorScheme(
     outline = Color(0xFF777777),
     outlineVariant = Color(0xFFB7B7B7),
 )
-private val SeamTypography = Typography(
+private val SliploomTypography = Typography(
     headlineMedium = TextStyle(
         fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Medium,
         fontSize = 28.sp, lineHeight = 34.sp, letterSpacing = (-0.45).sp,
@@ -119,7 +119,7 @@ private val SeamTypography = Typography(
 )
 
 @Composable
-internal fun SeamMaterial(overlay: @Composable () -> Unit, content: @Composable ColumnScope.(Modifier) -> Unit) {
+internal fun SliploomMaterial(overlay: @Composable () -> Unit, content: @Composable ColumnScope.(Modifier) -> Unit) {
     val dark = isSystemInDarkTheme()
     val themeContrast = Build.VERSION.SDK_INT >= 34 && raisedThemeContrast()
     val highContrastText = Build.VERSION.SDK_INT >= 36 && highContrastText()
@@ -138,7 +138,7 @@ internal fun SeamMaterial(overlay: @Composable () -> Unit, content: @Composable 
         }
         Modifier.shadow(12.dp, PaneShape).background(fill, PaneShape).border(1.dp, rim, PaneShape)
     }.clip(PaneShape)
-    MaterialTheme(colorScheme = colors, typography = SeamTypography) {
+    MaterialTheme(colorScheme = colors, typography = SliploomTypography) {
         Surface(modifier = Modifier.fillMaxSize(), color = colors.background) {
             val backlight = when {
                 opaque -> Modifier
@@ -160,7 +160,7 @@ internal fun SeamMaterial(overlay: @Composable () -> Unit, content: @Composable 
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    SeamWordmark()
+                    SliploomWordmark()
                     content(pane)
                 }
             }
@@ -267,7 +267,7 @@ internal fun TransferIdleHeader(receiving: Boolean) {
         PeerSizedText(
             text = if (receiving) receiveHint else sendHint,
             peerText = if (receiving) sendHint else receiveHint,
-        ) { text, _ -> SeamDetail(text) }
+        ) { text, _ -> SliploomDetail(text) }
     }
 }
 
@@ -290,7 +290,7 @@ private fun PeerSizedText(text: String, peerText: String?, label: @Composable (S
 }
 
 @Composable
-private fun SeamWordmark() {
+private fun SliploomWordmark() {
     val ink = MaterialTheme.colorScheme.onBackground
     Row(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -322,7 +322,7 @@ private fun SeamWordmark() {
 }
 
 @Composable
-internal fun SeamAction(label: String, onClick: () -> Unit, primary: Boolean = true, enabled: Boolean = true) {
+internal fun SliploomAction(label: String, onClick: () -> Unit, primary: Boolean = true, enabled: Boolean = true) {
     val active = LocalPageActive.current
     val click = { if (active()) onClick() }
     val action = Modifier.heightIn(min = 48.dp).focusProperties { canFocus = active() }
@@ -331,7 +331,7 @@ internal fun SeamAction(label: String, onClick: () -> Unit, primary: Boolean = t
             onClick = click,
             enabled = enabled,
             modifier = action.fillMaxWidth(),
-            shape = SeamControlShape,
+            shape = SliploomControlShape,
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         ) {
             Text(label)
@@ -341,7 +341,7 @@ internal fun SeamAction(label: String, onClick: () -> Unit, primary: Boolean = t
             onClick = click,
             enabled = enabled,
             modifier = action,
-            shape = SeamControlShape,
+            shape = SliploomControlShape,
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
         ) {
             Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -350,7 +350,7 @@ internal fun SeamAction(label: String, onClick: () -> Unit, primary: Boolean = t
 }
 
 @Composable
-internal fun SeamDetail(text: String, modifier: Modifier = Modifier) {
+internal fun SliploomDetail(text: String, modifier: Modifier = Modifier) {
     Text(text, modifier, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
 }
 

@@ -204,7 +204,7 @@ mod windows {
         1
     }
 
-    fn seam_window() -> Option<Hwnd> {
+    fn sliploom_window() -> Option<Hwnd> {
         let mut search = Search {
             thread: unsafe { GetCurrentThreadId() },
             process: std::process::id(),
@@ -221,7 +221,7 @@ mod windows {
     }
 
     pub(crate) fn is_maximized() -> Option<bool> {
-        seam_window().map(|hwnd| unsafe { IsZoomed(hwnd) != 0 })
+        sliploom_window().map(|hwnd| unsafe { IsZoomed(hwnd) != 0 })
     }
 
     impl Backdrop {
@@ -295,7 +295,7 @@ mod windows {
                         && !preferences.increased_contrast;
                     let mut applied = false;
                     if (enabled || needs_reset.is_some())
-                        && let Some(hwnd) = seam_window()
+                        && let Some(hwnd) = sliploom_window()
                     {
                         if enabled {
                             needs_reset = Some(hwnd);

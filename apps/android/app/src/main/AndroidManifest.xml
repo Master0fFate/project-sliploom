@@ -6,7 +6,7 @@
 
     <application
         android:allowBackup="false"
-        android:icon="@mipmap/seam_icon"
+        android:icon="@mipmap/sliploom_icon"
         android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.NoActionBar">
         <provider

@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io;
 use std::net::Ipv4Addr;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -189,15 +189,27 @@ impl Workers {
     }
 }
 
-fn trust_directory() -> Option<PathBuf> {
-    let local = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
-    local
-        .is_absolute()
-        .then(|| local.join("SEAM").join("Trust"))
+pub(crate) struct Profile {
+    trust: Trust,
+    directory: cable_ui::Folder,
 }
 
-pub(crate) fn open() -> Option<Trust> {
-    Trust::open(&trust_directory()?).ok()
+pub(crate) fn open() -> Option<Profile> {
+    let local = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
+    let directory = cable_ui::open_trust_directory(&local, has_legacy_state).ok()?;
+    let trust = Trust::open(&directory.path).ok()?;
+    Some(Profile { trust, directory })
+}
+
+fn has_legacy_state(directory: &Path) -> io::Result<bool> {
+    for name in ["identity.dpapi", "peers.dpapi", RECEIVE_FLAG] {
+        match fs::symlink_metadata(directory.join(name)) {
+            Ok(_) => return Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(false)
 }
 
 fn receive_opt_in(path: &Path, clear: bool) -> io::Result<bool> {
@@ -388,12 +400,11 @@ struct State {
 pub(crate) struct Panel(Rc<State>);
 
 impl Panel {
-    pub(crate) fn new(cx: &mut WindowContext, trust: Option<Trust>, workers: Workers) -> Self {
+    pub(crate) fn new(cx: &mut WindowContext, profile: Option<&Profile>, workers: Workers) -> Self {
         let rt = &cx.ui.runtime;
         let (events, rx) = mpsc::channel();
-        let receive_flag = trust
-            .as_ref()
-            .and_then(|_| trust_directory().map(|dir| dir.join(RECEIVE_FLAG)));
+        let trust = profile.map(|profile| profile.trust.clone());
+        let receive_flag = profile.map(|profile| profile.directory.path.join(RECEIVE_FLAG));
         let (receive, receive_status) = match receive_flag
             .as_deref()
             .map(|path| receive_opt_in(path, false))
@@ -608,7 +619,7 @@ impl Panel {
         let armed = state.armed.clone();
         let cancel = Cancel::default();
         let stop = cancel.clone();
-        if !state.workers.start("seam-trusted-receive", cancel.clone(), move || {
+        if !state.workers.start("sliploom-trusted-receive", cancel.clone(), move || {
             let message = match cable_ui::open_destination(None, true) {
                 Ok(folder) => {
                     let _ = trust.serve(address, &folder.path, &stop, |prompt| {
@@ -735,7 +746,7 @@ impl Panel {
         let events = state.events.clone();
         if state
             .workers
-            .start("seam-trusted-pair", lease.cancel.clone(), move || {
+            .start("sliploom-trusted-pair", lease.cancel.clone(), move || {
                 let paired = lease.live()
                     && trust
                         .pair(&code, &lease.cancel, |prompt| {
@@ -829,7 +840,7 @@ impl Panel {
         state.forgetting.set(true);
         if !state
             .workers
-            .start("seam-trusted-forget", cancel.clone(), move || {
+            .start("sliploom-trusted-forget", cancel.clone(), move || {
                 if !cancel.load(Ordering::Acquire) {
                     let _ = events.send(Event::Forgotten(trust.forget(id).is_ok()));
                 }
@@ -963,7 +974,7 @@ impl Panel {
         let sweep = cancel.clone();
         if state
             .workers
-            .start("seam-trusted-ping", cancel.clone(), move || {
+            .start("sliploom-trusted-ping", cancel.clone(), move || {
                 thread::scope(|scope| {
                     for peer in peers {
                         if sweep.load(Ordering::Acquire) {
@@ -1144,7 +1155,7 @@ impl Panel {
     fn devices_view(&self, sending: Signal<bool>, send: send_ui::Card) -> View {
         if !self.available() {
             return metadata(text(
-                "Trusted devices are unavailable. Receive once still works.",
+                "Can’t open trusted device storage. Receive once still works.",
             ));
         }
         let devices = self.0.devices.clone();

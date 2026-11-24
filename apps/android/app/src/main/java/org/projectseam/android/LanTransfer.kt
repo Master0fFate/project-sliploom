@@ -255,7 +255,7 @@ internal class LanTransfer(private val invite: LanInvite, private val onStop: (T
         var watchdog: Thread? = null
         try {
             val socket = Socket(Proxy.NO_PROXY).also { raw = it }
-            watchdog = Thread({ watch(socket) }, "SEAM transfer timeout").apply {
+            watchdog = Thread({ watch(socket) }, "Sliploom transfer timeout").apply {
                 isDaemon = true
                 start()
             }

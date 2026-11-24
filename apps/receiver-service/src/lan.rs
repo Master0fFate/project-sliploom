@@ -388,7 +388,7 @@ fn authenticate(stream: &mut TlsStream<'_>, prelude: [u8; 5], token: &[u8; 32]) 
     let mut version = [0; 5];
     stream.read_exact(&mut version)?;
     if version != prelude {
-        return Err(invalid("unsupported SEAM envelope"));
+        return Err(invalid("unsupported Sliploom envelope"));
     }
     let presented = read_frame::<32>(stream, 0x01)?;
     if !bool::from(presented.ct_eq(token)) {
@@ -407,7 +407,7 @@ fn frame_header(stream: &mut impl CheckedStream) -> io::Result<(u8, u32)> {
 
 fn read_frame<const N: usize>(stream: &mut impl CheckedStream, kind: u8) -> io::Result<[u8; N]> {
     if frame_header(stream)? != (kind, N as u32) {
-        return Err(invalid("unexpected SEAM frame"));
+        return Err(invalid("unexpected Sliploom frame"));
     }
     let mut payload = [0; N];
     stream.read_exact(&mut payload)?;

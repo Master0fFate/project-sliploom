@@ -4,7 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$binary = (Resolve-Path 'apps/desktop/target/release/seam-desktop.exe').Path
+$binary = (Resolve-Path 'apps/desktop/target/release/sliploom.exe').Path
 $notice = (Resolve-Path 'apps/desktop/assets/Roboto-OFL.txt').Path
 $nsis = Join-Path ${env:ProgramFiles(x86)} 'NSIS/makensis.exe'
 $Package = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Package)

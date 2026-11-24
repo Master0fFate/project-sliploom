@@ -16,7 +16,9 @@
 
 1. Run current builds on devices that can reach each other on the same Wi-Fi network. Wi-Fi sending and receiving require Android 10 or later. On the receiver, open **Receive** and choose **Receive once**. On Windows, select **Use Wi-Fi instead** first; on Android, keep the receive sheet open.
 2. Select files with **Pick files** or **Share → Sliploom** on Android, or **Send → Choose files** on desktop. Scan the receiver’s QR code on Android, enter its code, or open a saved QR image in the desktop app. Check the destination, then select **Send**.
-3. **Receive once** allows one batch from whoever has the short-lived invitation. Keep the QR and code private: there is no second approval. Files appear in **Received files** on Android or in the selected save folder on Windows.
+3. **Receive once** allows one batch from whoever has the short-lived invitation. Keep the QR and code private: there is no second approval. Files appear in **Received files** on Android or in the selected save folder on Windows, which defaults to `%LOCALAPPDATA%\Sliploom`. Existing received files are left in place.
+
+On desktop, **Choose save folder** remembers your choice across launches. Windows uses the same preference for Wi‑Fi **Receive once** and cable receive. If the folder is no longer usable, Sliploom asks you to choose again. Trusted receive on Windows still uses the default folder.
 
 A batch can contain any regular file type: up to **32 files**, **64 MiB per file**, and **256 MiB total**. A file of unknown size counts as 64 MiB. If a transfer is interrupted, already saved files remain. Check the receiver before retrying an unconfirmed file.
 
@@ -25,7 +27,7 @@ A batch can contain any regular file type: up to **32 files**, **64 MiB per file
 
 Open **Trusted devices** on both devices. On Windows, choose **Show pairing QR** and scan it from Android. Compare the verification codes and confirm only if they match. Enable **Allow trusted receive** on Windows if you want it to accept files from paired devices.
 
-A ready trusted peer can send without a new QR or per-batch approval. Sliploom must be running, Android must stay in the foreground, and the devices must be reachable on the same local network. Pair again if an address changes. **Forget** revokes trust without deleting saved files. Pairing does not change USB permissions.
+A ready trusted peer can send without a new QR or per-batch approval. Sliploom must be running, Android must stay in the foreground, and the devices must be reachable on the same local network. Pair again if an address changes. **Forget** revokes trust without deleting saved files. Pairing does not change USB permissions. Existing trusted-device state remains usable.
 
 </details>
 
@@ -33,7 +35,7 @@ See [LAN test evidence](docs/TESTING/LAN_PROOF.md) for the earlier physical Andr
 
 ## USB on Windows
 
-- **Android → Windows (ADB debug mode):** Install Android SDK Platform Tools on Windows and connect with a USB data cable. USB debugging must already be authorized for that PC. With Sliploom open on Windows, select one image or PDF on Android and choose **Use debug USB**. Windows asks you to **Accept** or **Decline** before any file content is sent. No QR code or automatic Wi-Fi fallback. The default save folder is `%LOCALAPPDATA%\SEAM`.
+- **Android → Windows (ADB debug mode):** Install Android SDK Platform Tools on Windows and connect with a USB data cable. USB debugging must already be authorized for that PC. With Sliploom open on Windows, select one image or PDF on Android and choose **Use debug USB**. Windows asks you to **Accept** or **Decline** before any file content is sent. No QR code or automatic Wi-Fi fallback. The default save folder is `%LOCALAPPDATA%\Sliploom`.
 - **Windows → Android (MTP):** Unlock the phone, switch its USB mode to **File transfer**, then choose **Send → Use cable instead** in Sliploom on Windows. Check the detected phone, then select and send files (the same 32-file, 64 MiB per-file, and 256 MiB total limits apply). Files go to Android’s **Downloads** folder; a name conflict stops the copy rather than overwriting a file. This direction does not require Sliploom on Android, USB debugging, Wi-Fi, or a QR code.
 
 ## Build locally

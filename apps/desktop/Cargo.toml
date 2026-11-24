@@ -1,5 +1,5 @@
 [package]
-name = "seam-desktop"
+name = "sliploom"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -11,8 +11,12 @@ image = { version = "=0.25.10", default-features = false, features = ["jpeg", "p
 qrcode = { version = "=0.14.1", default-features = false }
 receiver-service = { path = '../receiver-service' }
 rqrr = "=0.11.0"
+tempfile = "=3.27.0"
 zgx = "=0.1.10"
 zgx-desktop = "=0.1.10"
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", default-features = false, features = [

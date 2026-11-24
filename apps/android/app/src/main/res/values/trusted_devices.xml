@@ -13,9 +13,9 @@
     <string name="trusted_show_code">Show code</string>
     <string name="trusted_hide_code">Hide code</string>
     <string name="trusted_enter_code">Enter pairing code</string>
-    <string name="trusted_code_hint">Enter the SEAM5 pairing code shown on the other device. Keep the code private.</string>
+    <string name="trusted_code_hint">Enter the pairing code shown on the other device. Keep the code private.</string>
     <string name="trusted_scan_prompt">Point the camera at the pairing QR in Trusted devices.</string>
-    <string name="trusted_invalid_code">This isn’t a SEAM5 pairing code.</string>
+    <string name="trusted_invalid_code">This isn’t a valid pairing code.</string>
     <string name="trusted_continue">Continue</string>
     <string name="trusted_verify_title">Verify this device</string>
     <string name="trusted_compare">Compare this verification code with the one shown on %1$s. Confirm only if they match.</string>

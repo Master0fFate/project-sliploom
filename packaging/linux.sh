@@ -3,7 +3,7 @@ export LC_ALL=C
 
 version=$1
 package=$2
-binary=apps/desktop/target/release/seam-desktop
+binary=apps/desktop/target/release/sliploom
 notice=apps/desktop/assets/Roboto-OFL.txt
 architecture=$(dpkg --print-architecture)
 test "$architecture" = amd64
@@ -14,7 +14,7 @@ trap 'rm -rf "$work"' EXIT
 stage="$work/package"
 mkdir -p "$(dirname "$package")" "$work/debian" "$stage/DEBIAN" "$stage/usr/bin" \
   "$stage/usr/share/applications" "$stage/usr/share/doc/sliploom"
-install -m 755 "$binary" "$stage/usr/bin/seam-desktop"
+install -m 755 "$binary" "$stage/usr/bin/sliploom"
 install -m 644 packaging/sliploom.desktop "$stage/usr/share/applications/sliploom.desktop"
 install -m 644 "$notice" "$stage/usr/share/doc/sliploom/Roboto-OFL.txt"
 
@@ -24,7 +24,7 @@ Source: sliploom
 Package: sliploom
 Architecture: any
 EOF
-shlibs=$(cd "$work" && dpkg-shlibdeps -O -e"$stage/usr/bin/seam-desktop")
+shlibs=$(cd "$work" && dpkg-shlibdeps -O -e"$stage/usr/bin/sliploom")
 [[ "$shlibs" == shlibs:Depends=?* ]]
 depends=${shlibs#shlibs:Depends=}
 for dependency in libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-cursor0 \
@@ -40,7 +40,7 @@ Version: $version
 Section: net
 Priority: optional
 Architecture: $architecture
-Maintainer: Project SEAM contributors
+Maintainer: Sliploom contributors
 Depends: $depends
 Recommends: xdg-desktop-portal
 Description: Local file transfer between desktop and Android
@@ -54,8 +54,8 @@ test "$(dpkg-deb --field "$package" Version)" = "$version"
 test "$(dpkg-deb --field "$package" Architecture)" = "$architecture"
 test "$(dpkg-deb --field "$package" Depends)" = "$depends"
 dpkg-deb --extract "$package" "$work/verify"
-test -x "$work/verify/usr/bin/seam-desktop"
-cmp "$binary" "$work/verify/usr/bin/seam-desktop"
+test -x "$work/verify/usr/bin/sliploom"
+cmp "$binary" "$work/verify/usr/bin/sliploom"
 cmp "$notice" "$work/verify/usr/share/doc/sliploom/Roboto-OFL.txt"
 desktop-file-validate "$work/verify/usr/share/applications/sliploom.desktop"
 

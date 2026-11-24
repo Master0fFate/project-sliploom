@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="receive_batch_title">Receive files</string>
-    <string name="receive_batch_hint">Anyone with the QR code can send one batch.</string>
+    <string name="receive_batch_hint">Create one Wi-Fi invitation so your sender can send one or more files.</string>
     <string name="receive_batch_code_hint">Anyone with this short-lived code can send one batch. Share it only with your sender.</string>
     <string name="receive_batch_keep_open">Keep this screen open until the batch finishes.</string>
     <string name="receive_batch_size">Size in bytes: %1$,d</string>
@@ -10,7 +10,9 @@
     <string name="receive_batch_saved_count">Files saved on this device: %1$d of %2$d</string>
     <string name="receive_batch_complete">Batch saved on this device.</string>
     <string name="receive_batch_failed">The batch did not finish. To receive more files, start a new invitation.</string>
+    <string name="receive_batch_cancelling">Cancelling…</string>
     <string name="receive_batch_cancelled">Receive cancelled.</string>
+    <string name="receive_batch_none_saved">No files were saved.</string>
     <string name="received_files">Received files</string>
     <string name="received_files_empty">No received files yet.</string>
     <string name="received_files_load_failed">Could not load received files.</string>

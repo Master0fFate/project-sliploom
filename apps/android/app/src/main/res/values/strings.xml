@@ -11,7 +11,7 @@
         <item quantity="other">%1$d files selected</item>
     </plurals>
     <string name="sending_unavailable">Sending unavailable</string>
-    <string name="tls_unavailable">Sending requires Android 10 or newer with TLS 1.3. Update Android or use another device to send. You can still check the file here.</string>
+    <string name="tls_unavailable">Wi-Fi sending requires Android 10 or newer with TLS 1.3.</string>
     <string name="scan_qr_hint">Choose Receive once in Sliploom on the receiving device, then scan its QR code.</string>
     <string name="scan_invitation">Scan QR</string>
     <string name="scan_again">Scan again</string>
@@ -29,13 +29,13 @@
     <string name="connecting">Connecting…</string>
     <string name="waiting_for_approval">Waiting for approval</string>
     <string name="approve_on_receiver">Approve this batch on the receiving device within 60 seconds.</string>
-    <string name="legacy_wifi_hint">This older Wi-Fi code (SEAM2) only supports one image or PDF. Scan a SEAM4 code for other files or batches.</string>
+    <string name="legacy_wifi_hint">This older Wi-Fi code only supports one image or PDF. For other files or batches, scan a Wi-Fi code that supports batches.</string>
     <string name="send_legacy_wifi">Send via legacy Wi-Fi</string>
     <string name="legacy_wifi_incompatible">Legacy transfer requires one image or PDF.</string>
     <string name="use_debug_usb">Use debug USB (image or PDF)</string>
     <string name="waiting_for_computer">Waiting for computer</string>
     <string name="accept_on_computer">Accept the cable transfer in Sliploom on your computer.</string>
-    <string name="open_seam_on_computer">Open Sliploom on your computer</string>
+    <string name="open_sliploom_on_computer">Open Sliploom on your computer</string>
     <string name="connect_usb">Connect your phone to your computer with a USB cable, then try again.</string>
     <string name="try_cable_again">Try cable again</string>
     <string name="use_wifi">Use Wi-Fi instead</string>
@@ -86,7 +86,7 @@
     <string name="byte_count">Bytes read: %1$d</string>
     <string name="sha256">SHA-256: %1$s</string>
     <string name="receive_a_file">Receive a file</string>
-    <string name="receive_hint">Receive one image or PDF from Sliploom on a device on the same Wi-Fi network.</string>
+    <string name="receive_hint">Receive files from another device running Sliploom on the same Wi-Fi network.</string>
     <string name="receive_unavailable">Receiving over Wi-Fi requires Android 10 or newer.</string>
     <string name="receive_once">Receive once</string>
     <string name="receive_starting">Preparing the invitation…</string>

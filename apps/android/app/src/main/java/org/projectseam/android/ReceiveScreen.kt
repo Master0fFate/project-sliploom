@@ -69,6 +69,7 @@ internal sealed interface ReceivePhase {
     class Waiting(val code: String, val qr: BitMatrix) : ReceivePhase
     data object Connected : ReceivePhase
     data class Receiving(val count: Int, val saved: Int, val bytes: Long) : ReceivePhase
+    data object Cancelling : ReceivePhase
     data class Result(val message: Int, val files: List<ReceivedFile>, val offered: Int?) : ReceivePhase
 }
 
@@ -82,13 +83,23 @@ internal class ReceiveState {
 
     fun start(context: Context) {
         if (!supportsLanReceive || phase != null || ReceiveOperations.busy) return
+        lastResult = null
         phase = ReceivePhase.Starting
         openFailed = false
-        attempt = ReceiveOperations.start(context, onPhase = { phase = it }) { result ->
+        attempt = ReceiveOperations.start(context, onPhase = {
+            if (phase != null && phase != ReceivePhase.Cancelling) phase = it
+        }) { result ->
             attempt = null
-            if (result != null && result.files.isNotEmpty()) lastResult = result
+            if (result.files.isNotEmpty()) lastResult = result
             if (phase != null) phase = result
         }
+    }
+
+    fun cancel() {
+        val receiving = attempt ?: return
+        if (phase == null || phase == ReceivePhase.Cancelling) return
+        phase = ReceivePhase.Cancelling
+        receiving.stop()
     }
 
     fun close() {
@@ -107,7 +118,7 @@ internal object ReceiveOperations {
         it.finished
     }
 
-    fun start(context: Context, onPhase: (ReceivePhase) -> Unit, onFinished: (ReceivePhase.Result?) -> Unit): Attempt {
+    fun start(context: Context, onPhase: (ReceivePhase) -> Unit, onFinished: (ReceivePhase.Result) -> Unit): Attempt {
         check(active == null)
         val attempt = Attempt(scope)
         active = attempt
@@ -118,14 +129,14 @@ internal object ReceiveOperations {
                     attempt.progress()?.let(onPhase)
                 }
             }
-            val result = try {
+            val message = try {
                 attempt.run(context, onPhase)
             } finally {
                 progress.cancel()
                 attempt.closing?.join()
                 active = null
             }
-            onFinished(result)
+            onFinished(attempt.result(message))
         }
         return attempt
     }
@@ -159,17 +170,15 @@ internal object ReceiveOperations {
             }
         }
 
-        private fun result(message: Int): ReceivePhase.Result? {
-            val files = saved.get()
-            if (stopped && message != R.string.receive_batch_complete && files.isEmpty()) return null
+        fun result(message: Int): ReceivePhase.Result {
             val status = if (stopped && message != R.string.receive_batch_complete) R.string.receive_batch_cancelled else message
-            return ReceivePhase.Result(status, files, acceptedCount.takeIf { it > 0 })
+            return ReceivePhase.Result(status, saved.get(), acceptedCount.takeIf { it > 0 })
         }
 
-        suspend fun run(context: Context, onPhase: (ReceivePhase) -> Unit): ReceivePhase.Result? = withContext(Dispatchers.IO) {
+        suspend fun run(context: Context, onPhase: (ReceivePhase) -> Unit): Int = withContext(Dispatchers.IO) {
             var waiting = false
             try {
-                if (stopped) return@withContext null
+                if (stopped) return@withContext R.string.receive_batch_cancelled
                 val opened = LanReceive.start(context)
                 val registered = synchronized(lock) {
                     if (stopped) false else {
@@ -179,14 +188,14 @@ internal object ReceiveOperations {
                 }
                 if (!registered) {
                     close(opened)
-                    return@withContext null
+                    return@withContext R.string.receive_batch_cancelled
                 }
                 val code = opened.invitation
                 val qr = QRCodeWriter().encode(code, BarcodeFormat.QR_CODE, 1, 1, mapOf(EncodeHintType.MARGIN to 4))
                 withContext(Dispatchers.Main) {
                     if (!stopped) onPhase(ReceivePhase.Waiting(code, qr))
                 }
-                if (stopped) return@withContext null
+                if (stopped) return@withContext R.string.receive_batch_cancelled
                 waiting = true
                 opened.awaitBatch(
                     onConnected = { connected = true },
@@ -197,13 +206,13 @@ internal object ReceiveOperations {
                     onSaved = { file -> saved.set(saved.get() + file) },
                     onProgress = { bytes.set(it) },
                 )
-                result(R.string.receive_batch_complete)
+                R.string.receive_batch_complete
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: SocketTimeoutException) {
-                result(R.string.receive_timed_out)
+                R.string.receive_timed_out
             } catch (_: Exception) {
-                result(if (waiting) R.string.receive_batch_failed else R.string.receive_start_failed)
+                if (waiting) R.string.receive_batch_failed else R.string.receive_start_failed
             } finally {
                 takeListener()?.let(::close)
             }
@@ -226,13 +235,13 @@ internal fun ReceiveScreen(state: ReceiveState, canStart: Boolean, onStart: () -
         title = stringResource(R.string.receive_batch_title),
         peerTitle = stringResource(R.string.send_files),
     ) {
-        SeamDetail(stringResource(if (supportsLanReceive) R.string.receive_batch_hint else R.string.receive_unavailable))
+        SliploomDetail(stringResource(if (supportsLanReceive) R.string.receive_batch_hint else R.string.receive_unavailable))
     }
     if (supportsLanReceive) {
-        SeamAction(stringResource(R.string.receive_once), onStart, enabled = canStart)
+        SliploomAction(stringResource(R.string.receive_once), onStart, enabled = canStart)
     }
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        SeamAction(
+        SliploomAction(
             stringResource(R.string.received_files), onHistory, primary = false,
             enabled = state.phase == null && !ReceiveOperations.busy,
         )
@@ -282,7 +291,7 @@ internal fun ReceivedFilesSheet(
                     items(loaded, key = { it.file.name }) { ReceivedFileRow(it, onOpen, onSave) }
                 }
             }
-            SeamAction(stringResource(R.string.close_receive), onDismiss, primary = false)
+            SliploomAction(stringResource(R.string.close_receive), onDismiss, primary = false)
         }
     }
 }
@@ -292,6 +301,7 @@ internal fun ReceivedFilesSheet(
 internal fun ReceiveSheet(
     phase: ReceivePhase,
     onDismiss: () -> Unit,
+    onCancel: () -> Unit,
     onOpen: (ReceivedFile) -> Unit,
     onSave: (ReceivedFile) -> Unit,
     openFailed: Boolean,
@@ -318,10 +328,10 @@ internal fun ReceiveSheet(
                 is ReceivePhase.Waiting -> {
                     var showCode by remember(phase) { mutableStateOf(false) }
                     ReceiveStatus(stringResource(R.string.receive_scan_hint))
-                    SeamDetail(stringResource(R.string.receive_batch_code_hint))
+                    SliploomDetail(stringResource(R.string.receive_batch_code_hint))
                     InviteQr(phase.qr, Modifier.align(Alignment.CenterHorizontally))
-                    SeamDetail(stringResource(R.string.receive_batch_keep_open))
-                    SeamAction(
+                    SliploomDetail(stringResource(R.string.receive_batch_keep_open))
+                    SliploomAction(
                         stringResource(if (showCode) R.string.hide_receive_code else R.string.show_receive_code),
                         { showCode = !showCode },
                         primary = false,
@@ -335,23 +345,30 @@ internal fun ReceiveSheet(
                 is ReceivePhase.Receiving -> {
                     ReceiveStatus(stringResource(R.string.receive_batch_receiving))
                     LinearProgressIndicator(Modifier.fillMaxWidth())
-                    SeamDetail(stringResource(R.string.receive_batch_saved_count, phase.saved, phase.count))
-                    SeamDetail(stringResource(R.string.bytes_received, phase.bytes))
+                    SliploomDetail(stringResource(R.string.receive_batch_saved_count, phase.saved, phase.count))
+                    SliploomDetail(stringResource(R.string.bytes_received, phase.bytes))
+                }
+                ReceivePhase.Cancelling -> {
+                    ReceiveStatus(stringResource(R.string.receive_batch_cancelling))
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
                 is ReceivePhase.Result -> BatchResult(phase, onOpen, onSave, openFailed)
             }
-            SeamAction(
-                stringResource(if (phase is ReceivePhase.Result) R.string.close_receive else R.string.cancel),
-                onDismiss,
-                primary = false,
-            )
+            if (phase != ReceivePhase.Cancelling) {
+                val isResult = phase is ReceivePhase.Result
+                SliploomAction(
+                    stringResource(if (isResult) R.string.close_receive else R.string.cancel),
+                    if (isResult) onDismiss else onCancel,
+                    primary = false,
+                )
+            }
         }
     }
 }
 
 @Composable
 private fun ReceiveStatus(message: String) {
-    SeamDetail(message, Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+    SliploomDetail(message, Modifier.semantics { liveRegion = LiveRegionMode.Polite })
 }
 
 @Composable
@@ -369,17 +386,21 @@ private fun BatchResult(
 @Composable
 private fun BatchStatus(result: ReceivePhase.Result) {
     ReceiveStatus(stringResource(result.message))
-    result.offered?.let { SeamDetail(stringResource(R.string.receive_batch_saved_count, result.files.size, it)) }
+    if (result.message == R.string.receive_batch_cancelled && result.files.isEmpty()) {
+        SliploomDetail(stringResource(R.string.receive_batch_none_saved))
+    } else {
+        result.offered?.let { SliploomDetail(stringResource(R.string.receive_batch_saved_count, result.files.size, it)) }
+    }
 }
 
 @Composable
 private fun ReceivedFileRow(file: ReceivedFile, onOpen: (ReceivedFile) -> Unit, onSave: (ReceivedFile) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        SeamDetail(file.file.name)
-        SeamDetail(stringResource(R.string.receive_batch_size, file.bytes))
+        SliploomDetail(file.file.name)
+        SliploomDetail(stringResource(R.string.receive_batch_size, file.bytes))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SeamAction(stringResource(R.string.open_received_file), { onOpen(file) }, primary = false)
-            SeamAction(stringResource(R.string.save_received_copy), { onSave(file) }, primary = false)
+            SliploomAction(stringResource(R.string.open_received_file), { onOpen(file) }, primary = false)
+            SliploomAction(stringResource(R.string.save_received_copy), { onSave(file) }, primary = false)
         }
     }
 }

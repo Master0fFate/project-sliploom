@@ -1,6 +1,6 @@
 # Sliploom receive-once protocol — Phase 2
 
-This specifies original filename support as an extension to the deployed development protocol at `53c3b4f`. It is not implementation evidence or release confirmation. The app was renamed from SEAM to Sliploom; the protocol identifiers below did not change.
+This specifies original filename support as an extension to the deployed development protocol at `53c3b4f`. It is not implementation evidence or release confirmation. Sliploom retains the `SEAM`-based protocol identifiers below for compatibility.
 
 ## Invitation and trust
 
@@ -85,8 +85,10 @@ Trusted devices use a separate SEAM5 control channel. An ordinary SEAM4 receive 
 - **Identity:** Android uses an Android Keystore P-256 key; Windows protects its private key at rest with current-user DPAPI. Trust belongs to the exact enrolled certificate and proof of its private key in mutual TLS 1.3. A label, IP address, USB serial or ADB attachment does not count. A key change requires fresh pairing.
 - **Pairing:** Open a separate short-lived, single-use SEAM5 QR. The scanner pins the server certificate before sharing pairing data. Both people compare the same six-digit value, derived from the pairing nonce and both ordered certificate hashes, and explicitly allow incoming batches while Sliploom is open. If pairing is interrupted and only one side remembers the other, forget that entry and pair again.
 - **Availability:** Probe only saved IPv4 endpoint hints. The peer appears available after an authenticated readiness reply, not after finding the same label. A stale address can require a fresh pairing QR. A connection can reveal the stable TLS leaf to a host on the LAN; Sliploom does not broadcast device names.
-- **Transfer:** Selecting a paired device and tapping Send opens a fresh mutual-TLS connection. An authorized receiver reserves one bounded SEAM4 session and returns its invitation privately over the encrypted control channel. The data socket still authenticates with that single-use bearer, not a client certificate. Windows saves to `%LOCALAPPDATA%\SEAM`; Android saves to Received files. Neither app opens received content automatically. Forget revokes future access and aborts an active grant without deleting completed files.
+- **Transfer:** Selecting a paired device and tapping Send opens a fresh mutual-TLS connection. An authorized receiver reserves one bounded SEAM4 session and returns its invitation privately over the encrypted control channel. The data socket still authenticates with that single-use bearer, not a client certificate. Windows saves to `%LOCALAPPDATA%\Sliploom` by default; Android saves to Received files. Neither app opens received content automatically. Forget revokes future access and aborts an active grant without deleting completed files.
 - **Cable:** The SEAM3 debug relay and native MTP do not establish an enrolled app identity. The Wi-Fi grant cannot be used to bypass their authorization.
+
+Changing the Windows receive default does not move existing received files. Existing trusted-device state remains usable.
 
 The foreground control listener uses private IPv4 TCP port 48162. Its prelude is `SEAM\x05`, followed by one operation byte: `0x01` PAIR, `0x02` PING or `0x03` OPEN. A PAIR request carries the 32-byte QR nonce and one platform byte (Windows `1`, Android `2`). The server sends `0x06` and its platform byte before confirmation. Each side explicitly confirms the six-digit value derived from `SHA-256("SEAM5 pair\x00" || nonce || serverHash || clientHash)`: interpret the first four bytes as an unsigned big-endian integer and reduce modulo 1,000,000. A successful PING returns `0x06`; a successful OPEN returns `0x06` followed by the 100-byte ASCII SEAM4 invitation. A refusal returns `0x15` or closes the connection. No operation may fall back to unauthenticated traffic.
 

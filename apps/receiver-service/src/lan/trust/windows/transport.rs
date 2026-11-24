@@ -212,7 +212,7 @@ struct VerifyClient {
 
 impl fmt::Debug for VerifyClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("SEAM5 client certificate verifier")
+        f.write_str("Sliploom client certificate verifier")
     }
 }
 

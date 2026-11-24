@@ -512,27 +512,27 @@ private inline fun <T> trustResult(work: () -> T): T? = try {
 @Composable
 internal fun TrustedScreen(state: TrustedState, onScan: () -> Unit) {
     TransferPageHeader(stringResource(R.string.trusted_devices)) {
-        SeamDetail(stringResource(R.string.trusted_hint))
+        SliploomDetail(stringResource(R.string.trusted_hint))
     }
     val peers = state.peers
     if (peers.isNotEmpty()) {
         TrustedDeviceList(peers, enabled = state.localReady && !state.busy, onDevice = state::requestForget)
     } else if (state.localReady) {
-        SeamDetail(stringResource(R.string.trusted_empty))
+        SliploomDetail(stringResource(R.string.trusted_empty))
     }
     val status = state.message ?: when {
         !supportsLanReceive -> R.string.receive_unavailable
         !state.ready -> R.string.trusted_unavailable
         else -> null
     }
-    status?.let { SeamDetail(stringResource(it), Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }
+    status?.let { SliploomDetail(stringResource(it), Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }
     if (supportsLanReceive) {
         val enabled = state.ready && !state.busy
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            SeamAction(stringResource(R.string.trusted_pair_new), state::arm, enabled = enabled)
+            SliploomAction(stringResource(R.string.trusted_pair_new), state::arm, enabled = enabled)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
-                SeamAction(stringResource(R.string.trusted_scan_qr), onScan, primary = false, enabled = enabled)
-                SeamAction(stringResource(R.string.enter_code), state::enterCode, primary = false, enabled = enabled)
+                SliploomAction(stringResource(R.string.trusted_scan_qr), onScan, primary = false, enabled = enabled)
+                SliploomAction(stringResource(R.string.enter_code), state::enterCode, primary = false, enabled = enabled)
             }
         }
     }
@@ -577,9 +577,9 @@ private fun TrustedDeviceCard(peer: TrustedPeer, enabled: Boolean, onClick: () -
     val active = LocalPageActive.current
     Row(
         modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp)
-            .clip(SeamControlShape)
+            .clip(SliploomControlShape)
             .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, SeamControlShape)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, SliploomControlShape)
             .focusProperties { canFocus = active() }
             .clickable(
                 enabled = enabled,
@@ -615,7 +615,7 @@ internal fun TrustedDestinationPicker(peers: List<TrustedPeer>, onSend: (Trusted
     val focus = LocalFocusManager.current
     val colors = MaterialTheme.colorScheme
     Box {
-        SeamAction(
+        SliploomAction(
             stringResource(R.string.trusted_choose),
             { focus.clearFocus(); menuPeers = peers },
             primary = false,
@@ -624,7 +624,7 @@ internal fun TrustedDestinationPicker(peers: List<TrustedPeer>, onSend: (Trusted
             expanded = menuPeers != null,
             onDismissRequest = { menuPeers = null },
             modifier = Modifier.widthIn(max = 304.dp),
-            shape = SeamControlShape,
+            shape = SliploomControlShape,
             containerColor = colors.surfaceContainerHigh,
             shadowElevation = 8.dp,
             border = BorderStroke(1.dp, colors.outlineVariant),
@@ -634,7 +634,7 @@ internal fun TrustedDestinationPicker(peers: List<TrustedPeer>, onSend: (Trusted
                     text = {
                         Column {
                             Text(peer.label, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            SeamDetail(peer.address.hostAddress.orEmpty())
+                            SliploomDetail(peer.address.hostAddress.orEmpty())
                         }
                     },
                     trailingIcon = {
@@ -678,42 +678,42 @@ internal fun TrustedSheet(state: TrustedState) {
             Text(stringResource(title), Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineMedium)
             when (sheet) {
                 TrustSheet.Joining -> {
-                    SeamDetail(stringResource(R.string.trusted_preparing), Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                    SliploomDetail(stringResource(R.string.trusted_preparing), Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                     LinearProgressIndicator(Modifier.fillMaxWidth())
-                    SeamAction(stringResource(R.string.cancel), state::dismiss, primary = false)
+                    SliploomAction(stringResource(R.string.cancel), state::dismiss, primary = false)
                 }
                 TrustSheet.Arming, is TrustSheet.Invitation -> Unit
                 TrustSheet.EnterCode -> {
                     var code by remember { mutableStateOf("") }
                     val focus = LocalFocusManager.current
-                    SeamDetail(stringResource(R.string.trusted_code_hint))
+                    SliploomDetail(stringResource(R.string.trusted_code_hint))
                     OutlinedTextField(
                         modifier = Modifier.fillMaxWidth(),
                         value = code,
                         onValueChange = { if (it.length <= TRUST_CODE_LENGTH + 8) code = it },
                         label = { Text(stringResource(R.string.trusted_enter_code)) },
                         singleLine = true,
-                        shape = SeamControlShape,
+                        shape = SliploomControlShape,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
                     )
-                    SeamAction(
+                    SliploomAction(
                         stringResource(R.string.trusted_continue),
                         { focus.clearFocus(); state.submitCode(code) }, enabled = isTrustedCode(code.trim()),
                     )
-                    SeamAction(stringResource(R.string.cancel), state::dismiss, primary = false)
+                    SliploomAction(stringResource(R.string.cancel), state::dismiss, primary = false)
                 }
                 is TrustSheet.Confirm -> {
-                    SeamDetail(stringResource(R.string.trusted_compare, sheet.prompt.label))
+                    SliploomDetail(stringResource(R.string.trusted_compare, sheet.prompt.label))
                     Text(sheet.prompt.code, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.headlineMedium)
-                    SeamDetail(stringResource(R.string.trusted_receive_permission))
-                    SeamAction(stringResource(R.string.trusted_confirm_yes), { state.decide(sheet, true) })
-                    SeamAction(stringResource(R.string.trusted_confirm_no), { state.decide(sheet, false) }, primary = false)
+                    SliploomDetail(stringResource(R.string.trusted_receive_permission))
+                    SliploomAction(stringResource(R.string.trusted_confirm_yes), { state.decide(sheet, true) })
+                    SliploomAction(stringResource(R.string.trusted_confirm_no), { state.decide(sheet, false) }, primary = false)
                 }
                 is TrustSheet.Forget -> {
-                    SeamDetail(stringResource(R.string.trusted_forget_hint, sheet.peer.label))
-                    SeamAction(stringResource(R.string.trusted_forget), { state.forget(sheet.peer) })
-                    SeamAction(stringResource(R.string.cancel), state::dismiss, primary = false)
+                    SliploomDetail(stringResource(R.string.trusted_forget_hint, sheet.peer.label))
+                    SliploomAction(stringResource(R.string.trusted_forget), { state.forget(sheet.peer) })
+                    SliploomAction(stringResource(R.string.cancel), state::dismiss, primary = false)
                 }
             }
         }
@@ -736,10 +736,10 @@ private fun PairingQrSheet(invitation: TrustSheet.Invitation?, onCancel: () -> U
                     Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineMedium,
                 )
                 if (invitation == null) {
-                    SeamDetail(stringResource(R.string.trusted_preparing), Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                    SliploomDetail(stringResource(R.string.trusted_preparing), Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                 } else {
-                    SeamDetail(stringResource(R.string.trusted_qr_hint))
+                    SliploomDetail(stringResource(R.string.trusted_qr_hint))
                     PairQr(invitation.qr, qrSize, Modifier.align(Alignment.CenterHorizontally))
                     if (showCode) {
                         Text(
@@ -757,12 +757,12 @@ private fun PairingQrSheet(invitation: TrustSheet.Invitation?, onCancel: () -> U
             horizontalArrangement = Arrangement.End,
         ) {
             if (invitation != null) {
-                SeamAction(
+                SliploomAction(
                     stringResource(if (showCode) R.string.trusted_hide_code else R.string.trusted_show_code),
                     { showCode = !showCode }, primary = false,
                 )
             }
-            SeamAction(stringResource(R.string.cancel), onCancel, primary = false)
+            SliploomAction(stringResource(R.string.cancel), onCancel, primary = false)
         }
     }
 }

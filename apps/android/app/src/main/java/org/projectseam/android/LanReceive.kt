@@ -142,7 +142,7 @@ internal class LanReceive private constructor(
         }
         checkNetwork()
         synchronized(lock) { stopped?.let { throw it } }
-        Thread(::watch, "SEAM receive deadline").apply { isDaemon = true }.start()
+        Thread(::watch, "Sliploom receive deadline").apply { isDaemon = true }.start()
     }
 
     private fun checkNetwork() {
@@ -536,7 +536,7 @@ private const val MAX_ATTEMPTS = 8
 
 private fun elapsed() = SystemClock.elapsedRealtime()
 
-private fun badFrame(): Nothing = throw IOException("Invalid SEAM receive envelope")
+private fun badFrame(): Nothing = throw IOException("Invalid Sliploom receive envelope")
 
 private fun closeQuietly(resource: Closeable?) {
     try {

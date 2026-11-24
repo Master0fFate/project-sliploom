@@ -96,7 +96,7 @@ impl Platform {
         match byte {
             1 => Ok(Self::Windows),
             2 => Ok(Self::Android),
-            _ => Err(invalid("unsupported SEAM peer platform")),
+            _ => Err(invalid("unsupported peer platform")),
         }
     }
 
@@ -620,18 +620,18 @@ impl Drop for GrantLease<'_> {
 fn decode_invite(code: &str) -> io::Result<(SocketAddrV4, [u8; 32], [u8; 32])> {
     let encoded = code
         .strip_prefix(PREFIX)
-        .ok_or_else(|| invalid("invalid SEAM5 pairing code"))?;
+        .ok_or_else(|| invalid("invalid Sliploom pairing code"))?;
     let mut packed = [0; 70];
     if code.len() != INVITE_LEN
         || URL_SAFE_NO_PAD.decode_slice(encoded, &mut packed).ok() != Some(70)
         || URL_SAFE_NO_PAD.encode(packed) != encoded
     {
-        return Err(invalid("invalid SEAM5 pairing code"));
+        return Err(invalid("invalid Sliploom pairing code"));
     }
     let [a, b, c, d, p, q, rest @ ..] = packed;
     let address = Ipv4Addr::new(a, b, c, d);
     if !address.is_private() || u16::from_be_bytes([p, q]) != PORT {
-        return Err(invalid("invalid SEAM5 pairing endpoint"));
+        return Err(invalid("invalid Sliploom pairing endpoint"));
     }
     let [pin, nonce] = rest.as_chunks::<32>().0 else {
         unreachable!()

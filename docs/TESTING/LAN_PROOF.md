@@ -1,6 +1,6 @@
-# SEAM receive-once milestone
+# Sliploom receive-once milestone
 
-**Not released.** The receive-once results below cover the earlier SEAM2 single-file milestone. See the [current batch walkthrough](../../README.md#send-and-receive-batches-over-wi-fi).
+**Not released.** The receive-once results below cover the earlier single-file milestone using the `SEAM2` protocol. See the [current batch walkthrough](../../README.md#send-and-receive-batches-over-wi-fi).
 
 ## Device-to-device baseline
 
@@ -16,7 +16,7 @@ The production Android sender also ran against the Rust receiver in a host JVM w
 
 ## Pixel to Windows over Wi-Fi
 
-A physical Pixel 9 Pro XL shared a generated PDF through the Android Sharesheet. The user selected Wi-Fi, scanned a fresh QR from Windows SEAM, and explicitly tapped Send. Android reported “Saved on computer.” The Windows debug build based on `103410d` with the desktop button update reported a confirmed save and returned to Receive once. The empty test folder ended with just `seam-cable-test.pdf` (596 bytes, SHA-256 `39b48a3717afedb8b619231ef9705df28937a5f9b4063b7f3ed8469693eb083f`), matching the source. The PC was listening on its Wi-Fi interface, not the developer cable receiver.
+A physical Pixel 9 Pro XL shared a generated PDF through the Android Sharesheet. The user selected Wi-Fi, scanned a fresh QR from the Windows app, and explicitly tapped Send. Android reported “Saved on computer.” The Windows debug build based on `103410d` with the desktop button update reported a confirmed save and returned to Receive once. The empty test folder ended with just `seam-cable-test.pdf` (596 bytes, SHA-256 `39b48a3717afedb8b619231ef9705df28937a5f9b4063b7f3ed8469693eb083f`), matching the source. The PC was listening on its Wi-Fi interface, not the developer cable receiver.
 
 The first scan worked but left a visibly empty manual code field, which obscured the next step. After the Android update, the user repeated the live QR scan and confirmed “Ready to send” before tapping Send. Both apps confirmed the second save as `seam-cable-test (2).pdf`; both files were still 596 bytes and matched the source SHA-256. The manual-code fallback and transient connection state were not exercised. No private invitation was recorded.
 

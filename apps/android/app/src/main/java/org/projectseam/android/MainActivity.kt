@@ -188,11 +188,18 @@ class MainActivity : ComponentActivity() {
                     pagerRevision++
                 }
             }
-            SeamMaterial(overlay = {
+            SliploomMaterial(overlay = {
                 if (showsReceive) {
                     val phase = receiver.phase
                     if (phase != null) {
-                        ReceiveSheet(phase, receiver::close, ::openReceived, ::saveReceived, receiver.openFailed)
+                        ReceiveSheet(
+                            phase = phase,
+                            onDismiss = receiver::close,
+                            onCancel = receiver::cancel,
+                            onOpen = ::openReceived,
+                            onSave = ::saveReceived,
+                            openFailed = receiver.openFailed,
+                        )
                     } else if (showsHistory) {
                         key(historyRevision) {
                             ReceivedFilesSheet({
@@ -1248,7 +1255,7 @@ private sealed class Status(val message: Int) {
     data object WaitingForComputer : Status(R.string.waiting_for_computer)
     data object Connecting : Status(R.string.connecting)
     data object WaitingForApproval : Status(R.string.waiting_for_approval)
-    data object CableUnavailable : Status(R.string.open_seam_on_computer)
+    data object CableUnavailable : Status(R.string.open_sliploom_on_computer)
     data object Declined : Status(R.string.send_declined)
     data object Sending : Status(R.string.sending)
     data object Unconfirmed : Status(R.string.save_unconfirmed)
@@ -1340,67 +1347,67 @@ private fun IntakeScreen(
     }
     if (status == Status.Idle) {
         TransferIdleHeader(receiving = false)
-        SeamAction(stringResource(R.string.pick_file), onPick)
+        SliploomAction(stringResource(R.string.pick_file), onPick)
     } else {
         TransferPageHeader(stringResource(headline), announce = true) {
             if (hasSource && (batchSummary == null || batchSummary.previous)) {
-                SeamDetail(pluralStringResource(R.plurals.selection_count, selectionCount, selectionCount))
+                SliploomDetail(pluralStringResource(R.plurals.selection_count, selectionCount, selectionCount))
             }
-            if (sendingTo != null) SeamDetail(stringResource(R.string.destination, sendingTo))
+            if (sendingTo != null) SliploomDetail(stringResource(R.string.destination, sendingTo))
             if (destination != null) {
-                SeamDetail(stringResource(R.string.destination, destination.address))
-                SeamDetail(stringResource(if (legacy) R.string.legacy_wifi_hint else R.string.send_connect_hint))
+                SliploomDetail(stringResource(R.string.destination, destination.address))
+                SliploomDetail(stringResource(if (legacy) R.string.legacy_wifi_hint else R.string.send_connect_hint))
             } else {
-                detail?.let { SeamDetail(stringResource(it)) }
+                detail?.let { SliploomDetail(stringResource(it)) }
                 if (status is Status.Read) {
-                    SeamDetail(stringResource(R.string.byte_count, status.count))
-                    SeamDetail(stringResource(R.string.sha256, status.digest))
+                    SliploomDetail(stringResource(R.string.byte_count, status.count))
+                    SliploomDetail(stringResource(R.string.sha256, status.digest))
                 }
                 if (sentBytes != null) {
-                    SeamDetail(stringResource(R.string.bytes_sent, sentBytes))
+                    SliploomDetail(stringResource(R.string.bytes_sent, sentBytes))
                 }
             }
             if (batchSummary != null) {
                 val label = if (batchSummary.previous) R.string.previous_batch_committed else R.string.batch_committed
-                SeamDetail(stringResource(label, batchSummary.committed, batchSummary.count))
+                SliploomDetail(stringResource(label, batchSummary.committed, batchSummary.count))
                 if (batchSummary.unconfirmed) {
-                    SeamDetail(stringResource(R.string.batch_item_unconfirmed, batchSummary.committed + 1))
+                    SliploomDetail(stringResource(R.string.batch_item_unconfirmed, batchSummary.committed + 1))
                 }
-                if (batchSummary.unsent != 0) SeamDetail(stringResource(R.string.batch_unsent, batchSummary.unsent))
+                if (batchSummary.unsent != 0) SliploomDetail(stringResource(R.string.batch_unsent, batchSummary.unsent))
             } else if (status.working && committed != 0) {
-                SeamDetail(stringResource(R.string.batch_committed, committed, selectionCount))
+                SliploomDetail(stringResource(R.string.batch_committed, committed, selectionCount))
             }
             if (status.unconfirmed || status == Status.Interrupted || batchSummary?.unconfirmed == true) {
-                SeamDetail(stringResource(R.string.check_receiver))
+                SliploomDetail(stringResource(R.string.check_receiver))
             }
         }
         when {
-            status.canCancel -> SeamAction(stringResource(R.string.cancel), onCancel)
+            status.canCancel -> SliploomAction(stringResource(R.string.cancel), onCancel)
             status.working -> Unit
             cableMode && hasSource -> {
                 if (status.canRetryCable) {
-                    SeamAction(stringResource(R.string.try_cable_again), onRetryCable)
+                    SliploomAction(stringResource(R.string.try_cable_again), onRetryCable)
                 }
                 if (supportsLanSend) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        SeamAction(stringResource(R.string.use_wifi), onUseWifi, primary = false)
+                        SliploomAction(stringResource(R.string.use_wifi), onUseWifi, primary = false)
                     }
                 }
-                SeamAction(stringResource(R.string.pick_file), onPick, primary = false)
+                SliploomAction(stringResource(R.string.pick_file), onPick, primary = false)
             }
-            !hasSource -> SeamAction(stringResource(R.string.pick_file), onPick)
+            !hasSource -> SliploomAction(stringResource(R.string.pick_file), onPick)
             showWifi -> {
                 if (destination != null) {
                     if (!legacy || selectionCount == 1) {
-                        SeamAction(
+                        SliploomAction(
                             stringResource(if (legacy) R.string.send_legacy_wifi else R.string.send),
                             { focus.clearFocus(); onSend() },
                         )
                     }
                 } else {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SeamDetail(stringResource(R.string.scan_qr_hint))
+                        SliploomDetail(stringResource(R.string.scan_qr_hint))
                         val feedback = scanMessage ?: R.string.invalid_invitation.takeIf { invitation.isNotEmpty() }
                         feedback?.let {
                             Text(
@@ -1410,7 +1417,7 @@ private fun IntakeScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                         }
-                        SeamAction(stringResource(R.string.scan_invitation), scan)
+                        SliploomAction(stringResource(R.string.scan_invitation), scan)
                         if (enteringCode) {
                             OutlinedTextField(
                                 modifier = Modifier.fillMaxWidth(),
@@ -1418,7 +1425,7 @@ private fun IntakeScreen(
                                 onValueChange = onInvitationChanged,
                                 label = { Text(stringResource(R.string.invitation)) },
                                 singleLine = true,
-                                shape = SeamControlShape,
+                                shape = SliploomControlShape,
                                 visualTransformation = PasswordVisualTransformation(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
                             )
@@ -1428,24 +1435,24 @@ private fun IntakeScreen(
                 if (trustedPeers.isNotEmpty()) TrustedDestinationPicker(trustedPeers, onSendToTrusted)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (destination != null) {
-                        SeamAction(stringResource(R.string.scan_again), scan, primary = false)
+                        SliploomAction(stringResource(R.string.scan_again), scan, primary = false)
                     } else if (!enteringCode) {
-                        SeamAction(stringResource(R.string.enter_code), onEnterCode, primary = false)
+                        SliploomAction(stringResource(R.string.enter_code), onEnterCode, primary = false)
                     }
                     if (destination == null && cableEligible) {
-                        SeamAction(stringResource(R.string.use_debug_usb), onUseCable, primary = false)
+                        SliploomAction(stringResource(R.string.use_debug_usb), onUseCable, primary = false)
                     }
-                    if (selectionCount == 1) SeamAction(stringResource(R.string.check_file), onCheck, primary = false)
-                    SeamAction(stringResource(R.string.pick_file), onPick, primary = false)
+                    if (selectionCount == 1) SliploomAction(stringResource(R.string.check_file), onCheck, primary = false)
+                    SliploomAction(stringResource(R.string.pick_file), onPick, primary = false)
                 }
             }
             else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!supportsLanSend && status != Status.Ready && status != Status.TlsUnavailable) {
-                    SeamDetail(stringResource(R.string.tls_unavailable))
+                    SliploomDetail(stringResource(R.string.tls_unavailable))
                 }
-                if (cableEligible) SeamAction(stringResource(R.string.use_debug_usb), onUseCable)
-                if (selectionCount == 1) SeamAction(stringResource(R.string.check_file), onCheck, primary = !cableEligible)
-                SeamAction(stringResource(R.string.pick_file), onPick, primary = false)
+                if (cableEligible) SliploomAction(stringResource(R.string.use_debug_usb), onUseCable)
+                if (selectionCount == 1) SliploomAction(stringResource(R.string.check_file), onCheck, primary = !cableEligible)
+                SliploomAction(stringResource(R.string.pick_file), onPick, primary = false)
             }
         }
     }
