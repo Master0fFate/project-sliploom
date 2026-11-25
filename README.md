@@ -8,7 +8,7 @@ Transfer files directly between devices on the same local network, without an ac
 - Start with **Receive once** on the receiving device. Its short-lived QR code and text code are two ways to share the same invitation. Anyone with it can send one batch without a second approval, so share it only with your sender.
 - A batch can include up to **32 regular files**, **64 MiB per file**, and **256 MiB total**. A file of unknown size counts as 64 MiB. Existing files are not overwritten. If a transfer is interrupted, already saved files remain; check the receiver before retrying an unconfirmed file.
 
-[Android](#android) · [macOS Apple silicon](#macos-apple-silicon) · [Ubuntu 24.04 x64](#ubuntu-2404-x64) · [Windows x64](#windows-x64) · [Downloads](#downloads) · [USB](#usb-on-windows)
+[Android](#android) · [macOS Apple silicon](#macos-apple-silicon) · [Ubuntu 24.04 x64](#ubuntu-2404-x64) · [Windows x64](#windows-x64) · [Downloads](#downloads) · [USB on macOS and Ubuntu](#usb-on-macos-and-ubuntu) · [USB on Windows](#usb-on-windows)
 
 ### Android
 
@@ -53,9 +53,15 @@ Get the package and its matching checksum from the [latest GitHub release](https
 
 See [how to verify downloads](docs/RELEASE_PIPELINE.md#verify-downloads). A matching checksum verifies the downloaded bytes, not the publisher’s identity.
 
+## USB on macOS and Ubuntu
+
+To receive one image or PDF from Android by cable, install Android SDK Platform-Tools and run `adb start-server`. Connect one phone and authorize USB debugging. In Sliploom, select **Use cable instead** and choose an existing save folder. On Android, select the file and tap **Use debug USB (image or PDF)**, then accept the transfer on the desktop.
+
+This direction does not use Wi-Fi. It is not in the macOS or Ubuntu v1.0.0 installers. Desktop-to-Android cable send (MTP) is not available on macOS or Ubuntu.
+
 ## USB on Windows
 
-Windows is the only desktop build with USB transfers and Trusted Devices. Neither is needed for Wi-Fi **Receive once**.
+USB and Trusted Devices are optional. Neither is needed for Wi-Fi **Receive once**.
 
 - **Android → Windows (ADB):** Install Android SDK Platform Tools on Windows, connect with a USB data cable, and make sure USB debugging is authorized for that PC. Keep Sliploom open in cable receive mode. On Android, select one image or PDF and choose **Use debug USB (image or PDF)**. Windows asks you to **Accept** or **Decline** before any file content is sent. There is no QR code or automatic Wi-Fi fallback.
 - **Windows → Android (MTP):** Unlock the phone, set its USB mode to **File transfer**, and select **Send → Use cable instead** on Windows. Check the detected phone, then choose and send files. The Wi-Fi batch limits also apply here. Files go to Android’s **Downloads** folder; a name conflict stops the copy rather than overwriting a file. This direction does not require Sliploom on Android, USB debugging, Wi-Fi, or a QR code.
