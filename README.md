@@ -1,87 +1,85 @@
-<h1 align="center">Sliploom</h1>
-<p align="center">Transfer files directly between devices on the same local network. No account or cloud service.</p>
-<p align="center">
-  <a href="https://github.com/Master0fFate/project-sliploom/actions/workflows/build.yml"><img src="https://github.com/Master0fFate/project-sliploom/actions/workflows/build.yml/badge.svg?branch=main" alt="Build checks"></a>
-</p>
-<p align="center">
-  <a href="#send-and-receive-batches-over-wi-fi">Wi-Fi</a> ·
-  <a href="#usb-on-windows">USB</a> ·
-  <a href="#build-locally">Build locally</a> ·
-  <a href="#downloads">Downloads</a>
-</p>
+# Sliploom
 
-Check [GitHub Releases](https://github.com/Master0fFate/project-sliploom/releases) for public downloads when available. Android and Windows are the Wi-Fi transfer targets tested so far. macOS (Apple Silicon) and Ubuntu 24.04 (x64) are build and package targets; native transfers on those platforms haven’t been verified. USB and desktop Trusted Devices remain Windows-only. See the [transfer test results](docs/TESTING/LAN_PROOF.md) for the routes exercised so far.
+Transfer files directly between devices on the same local network, without an account or cloud service.
 
 ## Send and receive batches over Wi-Fi
 
-1. Run current builds on devices that can reach each other on the same Wi-Fi network. Wi-Fi sending and receiving require Android 10 or later. On the receiver, open **Receive** and choose **Receive once**. On Windows, select **Use Wi-Fi instead** first; on Android, keep the receive sheet open.
-2. Select files with **Pick files** or **Share → Sliploom** on Android, or **Send → Choose files** on desktop. Scan the receiver’s QR code on Android, enter its code, or open a saved QR image in the desktop app. Check the destination, then select **Send**.
-3. **Receive once** allows one batch from whoever has the short-lived invitation. Keep the QR and code private: there is no second approval. Files appear in **Received files** on Android or in the selected save folder on Windows, which defaults to `%LOCALAPPDATA%\Sliploom`. Existing received files are left in place.
+- Open Sliploom on both devices. Use the same local Wi-Fi network and make sure the devices can reach each other.
+- Start with **Receive once** on the receiving device. Its short-lived QR code and text code are two ways to share the same invitation. Anyone with it can send one batch without a second approval, so share it only with your sender.
+- A batch can include up to **32 regular files**, **64 MiB per file**, and **256 MiB total**. A file of unknown size counts as 64 MiB. Existing files are not overwritten. If a transfer is interrupted, already saved files remain; check the receiver before retrying an unconfirmed file.
 
-On desktop, **Choose save folder** remembers your choice across launches. Windows uses the same folder for Wi‑Fi **Receive once**, cable receive, and trusted receive. If the folder is no longer usable, choose another one. Changing folders doesn’t turn off trusted receive; a trusted batch already in progress finishes in the folder it started with.
+[Android](#android) · [macOS Apple silicon](#macos-apple-silicon) · [Ubuntu 24.04 x64](#ubuntu-2404-x64) · [Windows x64](#windows-x64) · [Downloads](#downloads) · [USB](#usb-on-windows)
 
-A batch can contain any regular file type: up to **32 files**, **64 MiB per file**, and **256 MiB total**. A file of unknown size counts as 64 MiB. If a transfer is interrupted, already saved files remain. Check the receiver before retrying an unconfirmed file.
+### Android
 
-<details>
-<summary>Trusted Devices on Android and Windows</summary>
+- **Install:** Open the signed [sliploom-android.apk](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-android.apk). If prompted, allow APK installs from the app you opened it with. Wi-Fi sending and receiving require **Android 10 or later**.
+- **Receive:** Swipe to **Receive files**, tap **Receive once**, and keep the sheet open until the batch finishes. To share the text code, tap **Show Wi-Fi code**. Find transfers in **Received files** and use **Save copy** to export a file.
+- **Send:** In **Send file(s)**, tap **Pick files**, or use **Share → Sliploom** from another app. Tap **Scan QR** to scan the receiver’s invitation, or **Enter code** to enter its **Wi-Fi code**. Check the destination, then tap **Send**.
 
-Open **Trusted devices** on both devices. On Windows, choose **Show pairing QR** and scan it from Android. Compare the verification codes and confirm only if they match. Enable **Allow trusted receive** on Windows if you want it to accept files from paired devices.
+Android requires the same signing key for an in-place upgrade of `org.projectseam.android`. A debug or differently signed build cannot be upgraded in place with the release APK. Removing the existing app may delete its data.
 
-A ready trusted peer can send without a new QR or per-batch approval. Sliploom must be running, Android must stay in the foreground, and the devices must be reachable on the same local network. Pair again if an address changes. **Forget** revokes trust without deleting saved files. Pairing does not change USB permissions. Existing trusted-device state remains usable.
+### macOS Apple silicon
 
-</details>
+- **Install:** Open [sliploom-macos-arm64.dmg](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-macos-arm64.dmg), drag `Sliploom.app` into Applications, then open it. The DMG has no Developer ID signature or notarization, so macOS may warn or block it.
+- **Receive:** Sliploom opens in Wi-Fi receive mode. Select **Choose save folder** before your first **Receive once**. Use **Manual code** to reveal the invitation as text. Sliploom remembers your folder across launches.
+- **Send:** Select **Send → Choose files**. Paste the receiver’s **One-time code** or select **Open QR image** to read a saved QR image (not a live camera scan). Check the destination, then select **Send**.
 
-See [LAN test evidence](docs/TESTING/LAN_PROOF.md) for the earlier physical Android-to-Windows PDF transfer and separate batch protocol checks. The protocol checks were not physical-device batch tests.
+### Ubuntu 24.04 x64
+
+- **Install:** Download [sliploom-linux-amd64.deb](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-linux-amd64.deb), then run `sudo apt install ./sliploom-linux-amd64.deb` from the download directory. Use a graphical desktop session with working graphics drivers and a desktop portal backend for file pickers.
+- **Receive:** Sliploom opens in Wi-Fi receive mode. Select **Choose save folder** before your first **Receive once**. Use **Manual code** to reveal the invitation as text. Sliploom remembers your folder across launches.
+- **Send:** Select **Send → Choose files**. Paste the receiver’s **One-time code** or select **Open QR image** to read a saved QR image (not a live camera scan). Check the destination, then select **Send**.
+
+### Windows x64
+
+- **Install:** Run [sliploom-windows-x64.exe](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-windows-x64.exe). It installs for the current user under `%LOCALAPPDATA%\Programs\Sliploom`. The installer has no Authenticode signature, so Windows may show a security warning.
+- **Receive:** Sliploom starts in cable receive mode. Select **Use Wi-Fi instead**, then **Receive once**. Use **Manual code** to reveal the invitation as text. Files go to `%LOCALAPPDATA%\Sliploom` by default. **Choose save folder** remembers your selection across launches.
+- **Send:** Select **Send → Choose files**. Paste the receiver’s **One-time code** or select **Open QR image** to read a saved QR image (not a live camera scan). Check the destination, then select **Send**.
+
+### What’s been tested
+
+Desktop CI runs a same-host Wi-Fi batch on Windows, macOS, and Ubuntu. It uses the same sender and receiver as the app and checks file contents and receipts. It does not test the desktop UI or transfers between physical devices. The [LAN test notes](docs/TESTING/LAN_PROOF.md) record the physical Android-to-Windows transfer and earlier protocol checks.
+
+## Downloads
+
+Get the package and its matching checksum from the [latest GitHub release](https://github.com/Master0fFate/project-sliploom/releases/latest).
+
+| Platform | Package | SHA-256 |
+| --- | --- | --- |
+| Android | [APK](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-android.apk) | [Checksum](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-android.apk.sha256) |
+| macOS Apple silicon | [DMG](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-macos-arm64.dmg) | [Checksum](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-macos-arm64.dmg.sha256) |
+| Ubuntu 24.04 x64 | [DEB](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-linux-amd64.deb) | [Checksum](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-linux-amd64.deb.sha256) |
+| Windows x64 | [EXE](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-windows-x64.exe) | [Checksum](https://github.com/Master0fFate/project-sliploom/releases/latest/download/sliploom-windows-x64.exe.sha256) |
+
+See [how to verify downloads](docs/RELEASE_PIPELINE.md#verify-downloads). A matching checksum verifies the downloaded bytes, not the publisher’s identity.
 
 ## USB on Windows
 
-- **Android → Windows (ADB debug mode):** Install Android SDK Platform Tools on Windows and connect with a USB data cable. USB debugging must already be authorized for that PC. With Sliploom open on Windows, select one image or PDF on Android and choose **Use debug USB**. Windows asks you to **Accept** or **Decline** before any file content is sent. No QR code or automatic Wi-Fi fallback. The default save folder is `%LOCALAPPDATA%\Sliploom`.
-- **Windows → Android (MTP):** Unlock the phone, switch its USB mode to **File transfer**, then choose **Send → Use cable instead** in Sliploom on Windows. Check the detected phone, then select and send files (the same 32-file, 64 MiB per-file, and 256 MiB total limits apply). Files go to Android’s **Downloads** folder; a name conflict stops the copy rather than overwriting a file. This direction does not require Sliploom on Android, USB debugging, Wi-Fi, or a QR code.
+Windows is the only desktop build with USB transfers and Trusted Devices. Neither is needed for Wi-Fi **Receive once**.
+
+- **Android → Windows (ADB):** Install Android SDK Platform Tools on Windows, connect with a USB data cable, and make sure USB debugging is authorized for that PC. Keep Sliploom open in cable receive mode. On Android, select one image or PDF and choose **Use debug USB (image or PDF)**. Windows asks you to **Accept** or **Decline** before any file content is sent. There is no QR code or automatic Wi-Fi fallback.
+- **Windows → Android (MTP):** Unlock the phone, set its USB mode to **File transfer**, and select **Send → Use cable instead** on Windows. Check the detected phone, then choose and send files. The Wi-Fi batch limits also apply here. Files go to Android’s **Downloads** folder; a name conflict stops the copy rather than overwriting a file. This direction does not require Sliploom on Android, USB debugging, Wi-Fi, or a QR code.
+
+<details>
+<summary>Optional Trusted Devices pairing (Android and Windows)</summary>
+
+Open **Trusted devices** on both devices. On Windows, select **Show pairing QR**; on Android, select **Scan QR**. Compare the verification codes and confirm only if they match. Turn on **Allow trusted receive** on Windows to accept transfers from paired devices.
+
+A ready trusted peer can send without a new QR or per-batch approval. Keep Sliploom running, keep Android in the foreground, and make sure the devices can reach each other on the same Wi-Fi. Pair again if an address changes. Forgetting a device revokes trust without deleting received files. Pairing does not change USB permissions, and existing trusted-device state remains usable.
+
+</details>
+
+Windows uses the same save folder for cable, Wi-Fi, and trusted receive. If it becomes unusable, choose another folder. Changing the folder does not disable trusted receive; a trusted batch already in progress finishes in the folder it started with.
 
 ## Build locally
 
-### Desktop
-
-Install Rust through `rustup`; the repository pins Rust `1.99.0`. On Windows x64, use the MSVC toolchain, Visual Studio Build Tools with C++ support, and the Windows SDK. From the repository root:
+**Desktop:** Install Rust through `rustup` (the repository pins `1.99.0`). On Windows x64, use the MSVC toolchain, Visual Studio Build Tools with C++ support, and the Windows SDK. On Apple silicon, use Xcode Command Line Tools and native ARM64 Rust. On Ubuntu 24.04 x64, install a C toolchain, `pkg-config`, `libfontconfig1-dev`, `libxkbcommon-dev`, `libdbus-1-dev`, and `libwayland-dev`. From the repository root:
 
 ```sh
 cargo build --locked --manifest-path apps/desktop/Cargo.toml
 cargo run --locked --manifest-path apps/desktop/Cargo.toml
 ```
 
-<details>
-<summary>Build prerequisites for macOS and Ubuntu</summary>
+**Android:** Install JDK 21, Android SDK Platform 36, and Build Tools 35.0.0. Set `ANDROID_HOME` to the SDK location. From `apps/android`, run `./gradlew --no-daemon :app:assembleDebug :app:lintDebug` (use `.\gradlew.bat` instead on Windows). The local debug APK is at `apps/android/app/build/outputs/apk/debug/app-debug.apk`. Android CI builds and lints the debug variant without testing on a device.
 
-- **macOS (Apple Silicon):** Xcode Command Line Tools and the native ARM64 Rust toolchain.
-- **Ubuntu 24.04 (x64):** A C toolchain and the CI dependencies: `pkg-config`, `libfontconfig1-dev`, `libxkbcommon-dev`, `libdbus-1-dev`, and `libwayland-dev`.
-
-These build instructions do not imply runtime support on either target.
-
-</details>
-
-### Android
-
-Use JDK 21, Android SDK Platform 36, and Build Tools 35.0.0. Point `ANDROID_HOME` at the installed SDK. Run the Gradle wrapper from `apps/android`:
-
-```powershell
-.\gradlew.bat --no-daemon :app:assembleDebug :app:lintDebug
-```
-
-On macOS or Linux, use `./gradlew --no-daemon :app:assembleDebug :app:lintDebug` instead. Install the local debug APK from `apps/android/app/build/outputs/apk/debug/app-debug.apk` on your Android device. Android CI builds the same debug variant without signing and runs lint; it does not test on a device.
-
-## Downloads
-
-When a public release is published, its [GitHub Releases](https://github.com/Master0fFate/project-sliploom/releases) page lists these assets, each with a matching `.sha256` file:
-
-| Platform | Asset |
-| --- | --- |
-| Android | `sliploom-android.apk` |
-| Windows x64 | `sliploom-windows-x64.exe` |
-| Ubuntu 24.04 x64 | `sliploom-linux-amd64.deb` |
-| macOS Apple Silicon | `sliploom-macos-arm64.dmg` |
-
-The Android release APK is signed. Android only accepts an in-place upgrade of `org.projectseam.android` signed with the same key. A debug or differently signed install cannot be upgraded in place with the release APK; uninstalling it may delete app data.
-
-The Windows installer is unsigned, and the macOS DMG has no Developer ID signature or notarization. Either may trigger OS security prompts.
-
-For desktop test builds, run [Package desktop candidates](https://github.com/Master0fFate/project-sliploom/actions/workflows/package.yml) manually and download from **Artifacts** on the completed run. These are not public releases. See [desktop packaging](packaging/README.md) for installation and [the release pipeline](docs/RELEASE_PIPELINE.md) for checksum instructions.
+See [desktop packaging](packaging/README.md) and the [release pipeline](docs/RELEASE_PIPELINE.md) for packaging, candidate artifacts, and release verification.

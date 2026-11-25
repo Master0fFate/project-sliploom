@@ -125,11 +125,13 @@ jobs:
 
           notes="$RUNNER_TEMP/sliploom-release-notes.md"
           tee "$notes" >/dev/null <<'NOTES'
-          ### Platforms and trust
+          ### Wi-Fi transfers
 
-          - Android and Windows x64 have Wi-Fi development builds. Android Wi-Fi transfers require Android 10 or later. USB and desktop Trusted Devices are Windows-only.
-          - macOS 15 (Apple Silicon) and Ubuntu 24.04 (amd64) are build and package targets; native transfers on those platforms have not been verified.
-          - The Windows installer is not Authenticode signed. The macOS app has no Developer ID signature and is not notarized. Windows SmartScreen or macOS Gatekeeper may warn or block installation. The SHA-256 files verify the downloaded bytes, not the publisher's identity.
+          Sliploom sends and receives files over the same Wi-Fi network on Android 10 or later, Windows x64, macOS Apple silicon, and Ubuntu 24.04 x64. Both devices need Sliploom. Use Receive once on the receiving device and share its QR or one-time code with the sender.
+
+          USB and desktop Trusted Devices are separate features. This version offers both on Windows; neither is needed to send or receive over Wi-Fi.
+
+          The Windows installer is not Authenticode signed. The macOS app has no Developer ID signature and is not notarized. Windows SmartScreen or macOS Gatekeeper may warn or block installation. The SHA-256 files verify the downloaded bytes, not the publisher's identity.
           NOTES
 
           gh release create "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" \
