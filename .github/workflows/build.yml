@@ -71,6 +71,20 @@ jobs:
         timeout-minutes: 10
         run: cargo run --locked --release -p receiver-service --example lan-smoke
 
+      - name: Install Linux MTP build dependency
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y --no-install-recommends libmtp-dev
+
+      - name: Install macOS MTP build dependency
+        if: runner.os == 'macOS'
+        run: brew install libmtp pkgconf
+
+      - name: Check experimental USB send
+        if: runner.os != 'Windows'
+        run: |
+          cargo clippy --locked --manifest-path apps/desktop/Cargo.toml --features unix-mtp --all-targets -- -D warnings
+          cargo build --locked --manifest-path apps/desktop/Cargo.toml --features unix-mtp
+
   android:
     name: Android debug build and lint
     runs-on: ubuntu-24.04

@@ -36,6 +36,9 @@ mod history;
 mod material;
 #[cfg(target_os = "windows")]
 mod mtp;
+#[cfg(all(unix, feature = "unix-mtp"))]
+#[path = "mtp_unix.rs"]
+mod mtp;
 mod send_ui;
 mod settings;
 mod titlebar;
@@ -782,7 +785,7 @@ fn receive_screen(
             )
         },
         move |mode, _| match mode {
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
             (true, _, true) => headline("Send over cable"),
             (true, _, _) => headline("Send over Wi-Fi"),
             #[cfg(target_os = "windows")]
@@ -819,62 +822,71 @@ fn receive_screen(
         #[cfg(not(target_os = "windows"))]
         false
     });
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
     let transport = {
         let transport_mode = sending.clone();
-        let transport_sending = sending.clone();
         let transport_send = send.clone();
+        #[cfg(target_os = "windows")]
+        let transport_sending = sending.clone();
+        #[cfg(target_os = "windows")]
         let transport_wifi = wifi.clone();
+        #[cfg(target_os = "windows")]
         let transport_blocked = receive_blocked.clone();
+        #[cfg(target_os = "windows")]
         let transport_cable = cable.clone();
+        #[cfg(target_os = "windows")]
         let transport_transition = transition.clone();
+        #[cfg(target_os = "windows")]
         let transport_tasks = mode_tasks.clone();
         switch(
             move || !transport_mode.get(),
-            move |receiving, _| {
-                if !receiving {
-                    return transport_send.transport_switch();
+            move |receiving, _| match receiving {
+                false => transport_send.transport_switch(),
+                #[cfg(target_os = "windows")]
+                true => {
+                    let label_mode = transport_wifi.clone();
+                    let mode = transport_wifi.clone();
+                    let blocked = transport_blocked.clone();
+                    let click_blocked = transport_blocked.clone();
+                    let sending = transport_sending.clone();
+                    let (cable, transition, tasks) = (
+                        transport_cable.clone(),
+                        transport_transition.clone(),
+                        transport_tasks.clone(),
+                    );
+                    quiet_action(text_signal(move || {
+                        if label_mode.get() {
+                            "Use cable instead"
+                        } else {
+                            "Use Wi-Fi instead"
+                        }
+                        .into()
+                    }))
+                    .disabled_when(move || blocked())
+                    .on_click(move || {
+                        let wifi_active = mode.get();
+                        if sending.get() || click_blocked() {
+                            return;
+                        }
+                        if !cable.switch_mode(wifi_active) {
+                            return;
+                        }
+                        if !wifi_active {
+                            transition.set(true);
+                            let (mode, transition, cable) =
+                                (mode.clone(), transition.clone(), cable.clone());
+                            tasks.spawn(async move {
+                                cable.wait_for_worker().await;
+                                mode.set(true);
+                                transition.set(false);
+                            });
+                            return;
+                        }
+                        mode.set(!wifi_active);
+                    })
                 }
-                let label_mode = transport_wifi.clone();
-                let mode = transport_wifi.clone();
-                let blocked = transport_blocked.clone();
-                let click_blocked = transport_blocked.clone();
-                let sending = transport_sending.clone();
-                let (cable, transition, tasks) = (
-                    transport_cable.clone(),
-                    transport_transition.clone(),
-                    transport_tasks.clone(),
-                );
-                quiet_action(text_signal(move || {
-                    if label_mode.get() {
-                        "Use cable instead"
-                    } else {
-                        "Use Wi-Fi instead"
-                    }
-                    .into()
-                }))
-                .disabled_when(move || blocked())
-                .on_click(move || {
-                    let wifi_active = mode.get();
-                    if sending.get() || click_blocked() {
-                        return;
-                    }
-                    if !cable.switch_mode(wifi_active) {
-                        return;
-                    }
-                    if !wifi_active {
-                        transition.set(true);
-                        let (mode, transition, cable) =
-                            (mode.clone(), transition.clone(), cable.clone());
-                        tasks.spawn(async move {
-                            cable.wait_for_worker().await;
-                            mode.set(true);
-                            transition.set(false);
-                        });
-                        return;
-                    }
-                    mode.set(!wifi_active);
-                })
+                #[cfg(all(unix, feature = "unix-mtp"))]
+                true => div().hidden(),
             },
         )
         .display_contents()
@@ -929,7 +941,7 @@ fn receive_screen(
         sending.set(true);
     });
     let mode_controls = row().items_center().gap(4.);
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
     let mode_controls = mode_controls.child(transport);
     let themes = cx.ui.theme().clone();
     cx.render(

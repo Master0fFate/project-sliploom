@@ -69,6 +69,8 @@ A ready trusted peer can send without a new QR or per-batch approval. Keep Slipl
 
 </details>
 
+An experimental source build can also send files from macOS or Ubuntu to a phone in USB **File transfer** mode. Build the desktop with `--features unix-mtp` and libmtp 1.1.21 or later available through `pkg-config` (`libmtp-dev` on Ubuntu, `libmtp` on Homebrew). This is not in the v1.0.0 installers. It checks the new file’s name and size on the phone, not its contents. If a transfer is unconfirmed, check **Downloads** before retrying.
+
 Windows uses the same save folder for cable, Wi-Fi, and trusted receive. If it becomes unusable, choose another folder. Changing the folder does not disable trusted receive; a trusted batch already in progress finishes in the folder it started with.
 
 ## Build locally
