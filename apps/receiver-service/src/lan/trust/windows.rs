@@ -1,7 +1,7 @@
 use std::{
     io::{self, Read},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
@@ -196,10 +196,10 @@ impl Trust {
         Ok(())
     }
 
-    pub fn serve(
+    pub fn serve<D: AsRef<Path> + Send>(
         &self,
         address: Ipv4Addr,
-        folder: &Path,
+        destination: impl Fn() -> io::Result<D>,
         cancel: &AtomicBool,
         on_pair: impl Fn(PairPrompt) -> bool,
         on_saved: impl Fn(Receipt),
@@ -207,7 +207,6 @@ impl Trust {
         if !address.is_private() {
             return Err(invalid("an RFC1918 IPv4 address is required").into());
         }
-        let folder = lan::destination(folder)?;
         let tls = transport::server_config(self)?;
         let listener = {
             let mut state = self.state();
@@ -271,14 +270,14 @@ impl Trust {
                         let _ = self.accept_pair(stream, id, *remote.ip(), &on_pair);
                     }
                     PING => {
-                        let ready = self.observe_peer(id, *remote.ip())
-                            && self.state().grant.is_none()
-                            && storage::has_space(&folder);
+                        let ready = self
+                            .available_destination(&destination, id, *remote.ip())
+                            .is_some();
                         let _ = transport::write(&mut stream, &[if ready { ACK } else { NAK }]);
                     }
                     OPEN => {
-                        let Some((session, grant)) =
-                            self.prepare_receive(address, &folder, id, *remote.ip(), cancel)
+                        let Some((session, grant, folder)) =
+                            self.prepare_receive(address, &destination, id, *remote.ip(), cancel)
                         else {
                             let _ = transport::write(&mut stream, &[NAK]);
                             continue;
@@ -303,6 +302,7 @@ impl Trust {
                                     let _ = send.send(receipt);
                                 },
                             );
+                            drop(folder);
                         });
                     }
                     _ => {
@@ -506,21 +506,30 @@ impl Trust {
         true
     }
 
-    fn prepare_receive(
+    fn available_destination<D: AsRef<Path>>(
+        &self,
+        destination: &impl Fn() -> io::Result<D>,
+        id: [u8; 32],
+        remote: Ipv4Addr,
+    ) -> Option<(D, PathBuf)> {
+        if !self.observe_peer(id, remote) || self.state().grant.is_some() {
+            return None;
+        }
+        let folder = destination().ok()?;
+        let path = lan::destination(folder.as_ref()).ok()?;
+        storage::has_space(&path).then_some((folder, path))
+    }
+
+    fn prepare_receive<D: AsRef<Path>>(
         &self,
         address: Ipv4Addr,
-        folder: &Path,
+        destination: &impl Fn() -> io::Result<D>,
         id: [u8; 32],
         remote: Ipv4Addr,
         cancel: &AtomicBool,
-    ) -> Option<(ReceiveSession, GrantLease<'_>)> {
-        if !self.observe_peer(id, remote)
-            || self.state().grant.is_some()
-            || !storage::has_space(folder)
-        {
-            return None;
-        }
-        let session = ReceiveSession::bind_batch(address, folder).ok()?;
+    ) -> Option<(ReceiveSession, GrantLease<'_>, D)> {
+        let (folder, path) = self.available_destination(destination, id, remote)?;
+        let session = ReceiveSession::bind_batch(address, &path).ok()?;
         let mut state = self.state();
         if state.grant.is_some() || state.find(id).is_none() || cancel.load(Ordering::Acquire) {
             return None;
@@ -536,6 +545,7 @@ impl Trust {
                 trust: self,
                 cancelled,
             },
+            folder,
         ))
     }
 }

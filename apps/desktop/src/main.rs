@@ -703,8 +703,12 @@ fn receive_screen(
 ) {
     cx.window.set_theme(Some(zgx::theme::Appearance::Dark));
     let glass = acrylic::available(cx);
+    let folder = cx
+        .ui
+        .runtime
+        .signal(saved_folder.as_ref().ok().cloned().flatten());
     #[cfg(target_os = "windows")]
-    let trusted = trusted_ui::Panel::new(cx, trust_profile, trust_workers);
+    let trusted = trusted_ui::Panel::new(cx, trust_profile, trust_workers, folder.clone());
     let send = send_ui::Card::new(
         cx,
         send_worker,
@@ -720,7 +724,7 @@ fn receive_screen(
     #[cfg(target_os = "windows")]
     let trusted_trigger = trusted.view(sending.clone(), send.clone());
     let screen = Screen {
-        folder: runtime.signal(saved_folder.as_ref().ok().cloned().flatten()),
+        folder,
         default_folder: runtime.signal(None),
         activity: runtime.signal(Activity::Idle),
         status: runtime.signal(String::new()),

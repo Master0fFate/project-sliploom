@@ -827,6 +827,12 @@ mod private_folder {
         _directories: Vec<File>,
     }
 
+    impl AsRef<Path> for Folder {
+        fn as_ref(&self) -> &Path {
+            &self.path
+        }
+    }
+
     impl Folder {
         pub(super) fn explore(&self) {
             let verb = wide(OsStr::new("open"));
