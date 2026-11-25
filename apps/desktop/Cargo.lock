@@ -2854,7 +2854,9 @@ dependencies = [
  "base64",
  "getrandom 0.4.3",
  "rcgen",
+ "rustix 1.1.6",
  "rustls",
+ "rustls-webpki",
  "sha2",
  "subtle",
  "tempfile",
@@ -3259,10 +3261,12 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "sliploom"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
+ "cc",
  "image",
  "libc",
+ "pkg-config",
  "qrcode",
  "receiver-service",
  "rqrr",

@@ -27,22 +27,23 @@ use material::{
 };
 
 mod acrylic;
-#[cfg(target_os = "windows")]
 mod adb;
-#[cfg(target_os = "windows")]
 mod cable_ui;
 mod dashboard;
 mod history;
 mod material;
 #[cfg(target_os = "windows")]
 mod mtp;
+#[cfg(all(unix, feature = "unix-mtp"))]
+#[path = "mtp_unix.rs"]
+mod mtp;
 mod send_ui;
 mod settings;
 mod titlebar;
-#[cfg(target_os = "windows")]
 mod trusted_ui;
 
 const APP_NAME: &str = "Sliploom";
+const TRUSTED_DEVICES: bool = cfg!(any(windows, all(unix, feature = "unix-trusted")));
 const WIFI_TICK: Duration = Duration::from_millis(75);
 
 #[derive(Clone, Copy, PartialEq)]
@@ -397,7 +398,6 @@ async fn pick_destination(
     }
 }
 
-#[cfg(target_os = "windows")]
 fn destination_label(folder: Signal<Option<PathBuf>>, default: Signal<Option<PathBuf>>) -> View {
     metadata(text_signal(move || {
         folder.get().or_else(|| default.get()).map_or_else(
@@ -595,21 +595,18 @@ fn status_control(
     wifi: Signal<bool>,
     screen: Screen,
     tasks: zgx_desktop::TaskSpawner,
-    #[cfg(target_os = "windows")] cable: cable_ui::Cable,
+    cable: cable_ui::Cable,
 ) -> (View, View) {
     let mut hide = None;
     let visible = open.clone();
     let badge_sending = sending.clone();
     let badge_send = send.clone();
-    #[cfg(target_os = "windows")]
     let badge_mode = wifi.clone();
     let badge_screen = screen.clone();
-    #[cfg(target_os = "windows")]
     let badge_cable = cable.clone();
     let trigger = quiet_action(text_signal(move || {
         let update = match badge_sending.get() {
             true => badge_send.has_status_update(),
-            #[cfg(target_os = "windows")]
             false if !badge_mode.get() => badge_cable.has_status_update(),
             false => {
                 !badge_screen.folder_warning.with(String::is_empty)
@@ -638,7 +635,6 @@ fn status_control(
             let send = send.clone();
             let wifi = wifi.clone();
             let screen = screen.clone();
-            #[cfg(target_os = "windows")]
             let cable = cable.clone();
             column()
                 .absolute()
@@ -655,7 +651,6 @@ fn status_control(
                         move || (sending.get(), wifi.get()),
                         move |mode, _| match mode {
                             (true, _) => send.status_view(),
-                            #[cfg(target_os = "windows")]
                             (false, false) => cable.status_view(),
                             (false, _) => {
                                 let screen = screen.clone();
@@ -697,9 +692,9 @@ fn receive_screen(
     wifi_worker: WifiWorker,
     send_worker: send_ui::Worker,
     saved_folder: &io::Result<Option<PathBuf>>,
-    #[cfg(target_os = "windows")] workers: cable_ui::Workers,
-    #[cfg(target_os = "windows")] trust_profile: Option<&trusted_ui::Profile>,
-    #[cfg(target_os = "windows")] trust_workers: trusted_ui::Workers,
+    workers: cable_ui::Workers,
+    trust_profile: Option<&trusted_ui::Profile>,
+    trust_workers: trusted_ui::Workers,
 ) {
     cx.window.set_theme(Some(zgx::theme::Appearance::Dark));
     let glass = acrylic::available(cx);
@@ -707,22 +702,18 @@ fn receive_screen(
         .ui
         .runtime
         .signal(saved_folder.as_ref().ok().cloned().flatten());
-    #[cfg(target_os = "windows")]
     let trusted = trusted_ui::Panel::new(cx, trust_profile, trust_workers, folder.clone());
-    let send = send_ui::Card::new(
-        cx,
-        send_worker,
-        #[cfg(target_os = "windows")]
-        trusted.clone(),
-    );
+    let send = send_ui::Card::new(cx, send_worker, trusted.clone());
     let runtime = &cx.ui.runtime;
     let wifi = runtime.signal(!cfg!(target_os = "windows"));
     let sending = runtime.signal(false);
     let history = History::new(cx);
-    #[cfg(target_os = "windows")]
-    trusted.watch(cx, history.clone(), sending.clone(), send.clone());
-    #[cfg(target_os = "windows")]
-    let trusted_trigger = trusted.view(sending.clone(), send.clone());
+    let trusted_trigger = if TRUSTED_DEVICES {
+        trusted.watch(cx, history.clone(), sending.clone(), send.clone());
+        trusted.view(sending.clone(), send.clone())
+    } else {
+        div().hidden()
+    };
     let screen = Screen {
         folder,
         default_folder: runtime.signal(None),
@@ -741,7 +732,6 @@ fn receive_screen(
     let status_open = runtime.signal(false);
     let cancel = screen.worker.cancel.clone();
     cx.on_closed(move || cancel.store(true, Ordering::Release));
-    #[cfg(target_os = "windows")]
     let cable = cable_ui::Cable::new(
         cx,
         workers,
@@ -757,7 +747,6 @@ fn receive_screen(
         wifi.clone(),
         screen.clone(),
         cx.tasks.clone(),
-        #[cfg(target_os = "windows")]
         cable.clone(),
     );
     let title_mode = wifi.clone();
@@ -769,9 +758,7 @@ fn receive_screen(
     let dialogs = cx.dialogs.clone();
     let tasks = cx.tasks.clone();
     let wifi_screen = screen.clone();
-    #[cfg(target_os = "windows")]
     let cable_screen = cable.clone();
-    #[cfg(target_os = "windows")]
     let cable_heading = cable.clone();
     let heading = switch(
         move || {
@@ -782,10 +769,8 @@ fn receive_screen(
             )
         },
         move |mode, _| match mode {
-            #[cfg(target_os = "windows")]
             (true, _, true) => headline("Send over cable"),
             (true, _, _) => headline("Send over Wi-Fi"),
-            #[cfg(target_os = "windows")]
             (false, false, _) => cable_heading.heading(),
             (false, _, _) => headline("Receive over Wi-Fi"),
         },
@@ -795,34 +780,22 @@ fn receive_screen(
         move || (body_sending.get(), body_mode.get()),
         move |mode, _| match mode {
             (true, _) => send_screen.view(),
-            #[cfg(target_os = "windows")]
             (false, false) => cable_screen.view(),
             (false, _) => wifi_view(wifi_screen.clone(), dialogs.clone(), tasks.clone()),
         },
     )
     .display_contents();
     let mode_activity = screen.activity.clone();
-    #[cfg(target_os = "windows")]
     let cable_blocked = cable.switch_blocked();
-    #[cfg(target_os = "windows")]
     let transition = cx.ui.runtime.signal(false);
-    #[cfg(target_os = "windows")]
     let changing = transition.clone();
-    #[cfg(target_os = "windows")]
     let mode_tasks = cx.tasks.clone();
-    let receive_blocked = Rc::new(move || {
-        if mode_activity.get() != Activity::Idle {
-            return true;
-        }
-        #[cfg(target_os = "windows")]
-        return changing.get() || cable_blocked();
-        #[cfg(not(target_os = "windows"))]
-        false
-    });
-    #[cfg(target_os = "windows")]
+    let receive_blocked =
+        Rc::new(move || mode_activity.get() != Activity::Idle || changing.get() || cable_blocked());
     let transport = {
         let transport_mode = sending.clone();
         let transport_sending = sending.clone();
+        #[cfg(any(windows, all(unix, feature = "unix-mtp")))]
         let transport_send = send.clone();
         let transport_wifi = wifi.clone();
         let transport_blocked = receive_blocked.clone();
@@ -833,7 +806,10 @@ fn receive_screen(
             move || !transport_mode.get(),
             move |receiving, _| {
                 if !receiving {
+                    #[cfg(any(windows, all(unix, feature = "unix-mtp")))]
                     return transport_send.transport_switch();
+                    #[cfg(not(any(windows, all(unix, feature = "unix-mtp"))))]
+                    return div().hidden();
                 }
                 let label_mode = transport_wifi.clone();
                 let mode = transport_wifi.clone();
@@ -896,7 +872,6 @@ fn receive_screen(
             return;
         }
         if sending.get() {
-            #[cfg(target_os = "windows")]
             if !wifi.get() && !cable.switch_mode(true) {
                 return;
             }
@@ -905,7 +880,6 @@ fn receive_screen(
             sending.set(false);
             return;
         }
-        #[cfg(target_os = "windows")]
         if !wifi.get() {
             if !cable.switch_mode(false) {
                 return;
@@ -928,18 +902,11 @@ fn receive_screen(
         status_open.set(false);
         sending.set(true);
     });
-    let mode_controls = row().items_center().gap(4.);
-    #[cfg(target_os = "windows")]
-    let mode_controls = mode_controls.child(transport);
+    let mode_controls = row().items_center().gap(4.).child(transport);
     let themes = cx.ui.theme().clone();
     cx.render(
         backdrop(glass, themes.clone())
-            .child(titlebar::view(
-                cx,
-                #[cfg(target_os = "windows")]
-                trusted_trigger,
-                status,
-            ))
+            .child(titlebar::view(cx, trusted_trigger, status))
             .child(dashboard::view(
                 themes,
                 heading,
@@ -952,11 +919,12 @@ fn receive_screen(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(target_os = "windows")]
     let workers = cable_ui::Workers::default();
-    #[cfg(target_os = "windows")]
-    let trust_profile = trusted_ui::open();
-    #[cfg(target_os = "windows")]
+    let trust_profile = if TRUSTED_DEVICES {
+        trusted_ui::open()
+    } else {
+        None
+    };
     let trust_workers = trusted_ui::Workers::default();
     let wifi_worker = WifiWorker::default();
     let send_worker = send_ui::Worker::default();
@@ -978,19 +946,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 wifi_worker.clone(),
                 send_worker.clone(),
                 &saved_folder,
-                #[cfg(target_os = "windows")]
                 workers.clone(),
-                #[cfg(target_os = "windows")]
                 trust_profile.as_ref(),
-                #[cfg(target_os = "windows")]
                 trust_workers.clone(),
             )
         });
     wifi_worker.shutdown();
     send_worker.shutdown();
-    #[cfg(target_os = "windows")]
     workers.shutdown();
-    #[cfg(target_os = "windows")]
     trust_workers.shutdown();
     result
 }

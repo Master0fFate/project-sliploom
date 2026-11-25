@@ -2,6 +2,8 @@ use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -150,6 +152,10 @@ fn locate_adb() -> io::Result<PathBuf> {
         if path.parent() == cwd.as_deref() || !path.is_file() {
             return None;
         }
+        #[cfg(unix)]
+        if fs::metadata(&path).ok()?.permissions().mode() & 0o111 == 0 {
+            return None;
+        }
         Some(path)
     };
     for name in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
@@ -163,6 +169,32 @@ fn locate_adb() -> io::Result<PathBuf> {
         && let Some(adb) = env::split_paths(&path).find_map(|dir| find(dir.join(ADB)))
     {
         return Ok(adb);
+    }
+    #[cfg(unix)]
+    {
+        #[cfg(target_os = "macos")]
+        let (sdk, bins) = (
+            "Library/Android/sdk",
+            ["/opt/homebrew/bin", "/usr/local/bin"],
+        );
+        #[cfg(target_os = "linux")]
+        let (sdk, bins) = ("Android/Sdk", ["/usr/local/bin", "/usr/bin"]);
+        if let Some(home) = env::var_os("HOME")
+            && let Some(adb) = find(
+                PathBuf::from(home)
+                    .join(sdk)
+                    .join("platform-tools")
+                    .join(ADB),
+            )
+        {
+            return Ok(adb);
+        }
+        if let Some(adb) = bins
+            .into_iter()
+            .find_map(|dir| find(Path::new(dir).join(ADB)))
+        {
+            return Ok(adb);
+        }
     }
     Err(io::Error::new(
         io::ErrorKind::NotFound,

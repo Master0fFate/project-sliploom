@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
@@ -22,9 +22,9 @@ use zgx::semantics::Live;
 use zgx_desktop::{FileDialogOptions, FileDialogs, FileFilter, TaskSpawner, WindowContext};
 
 use crate::material::{metadata, quiet_action, receive_primary};
-use crate::{byte_size, file_count, inline_status};
-#[cfg(target_os = "windows")]
-use crate::{mtp, trusted_ui};
+#[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
+use crate::mtp;
+use crate::{byte_size, file_count, inline_status, trusted_ui};
 
 const TICK: Duration = Duration::from_millis(75);
 const QR_FILE_LIMIT: u64 = 16 * 1024 * 1024;
@@ -34,7 +34,7 @@ const QR_SIDE_LIMIT: u32 = 4096;
 enum Activity {
     Idle,
     Picking,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
     Checking,
     Transferring,
     Cancelling,
@@ -50,11 +50,9 @@ enum WifiBlock {
 enum TransferOutcome {
     Wifi(BatchOutcome),
     Legacy(SendOutcome),
-    #[cfg(target_os = "windows")]
     Trusted(BatchOutcome),
-    #[cfg(target_os = "windows")]
     TrustedUnavailable,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
     Cable(mtp::BatchCopy),
 }
 
@@ -62,7 +60,7 @@ enum TransferOutcome {
 struct Progress {
     connected: AtomicBool,
     bytes: AtomicU64,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
     confirmed: AtomicUsize,
 }
 
@@ -110,13 +108,11 @@ pub(crate) struct Card {
     code: Signal<String>,
     scanned: Signal<Option<SendInvite>>,
     active_target: Signal<Option<Ipv4Addr>>,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
     cable_mode: Signal<bool>,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
     cable_target: Signal<Option<mtp::Target>>,
-    #[cfg(target_os = "windows")]
     trusted: trusted_ui::Panel,
-    #[cfg(target_os = "windows")]
     active_trusted_label: Signal<Option<String>>,
     activity: Signal<Activity>,
     status: Signal<String>,
@@ -126,24 +122,18 @@ pub(crate) struct Card {
 }
 
 impl Card {
-    pub(crate) fn new(
-        cx: &mut WindowContext,
-        worker: Worker,
-        #[cfg(target_os = "windows")] trusted: trusted_ui::Panel,
-    ) -> Self {
+    pub(crate) fn new(cx: &mut WindowContext, worker: Worker, trusted: trusted_ui::Panel) -> Self {
         let runtime = &cx.ui.runtime;
         let card = Self {
             files: runtime.signal(Vec::new()),
             code: runtime.signal(String::new()),
             scanned: runtime.signal(None),
             active_target: runtime.signal(None),
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
             cable_mode: runtime.signal(false),
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
             cable_target: runtime.signal(None),
-            #[cfg(target_os = "windows")]
             trusted,
-            #[cfg(target_os = "windows")]
             active_trusted_label: runtime.signal(None),
             activity: runtime.signal(Activity::Idle),
             status: runtime.signal(String::new()),
@@ -174,7 +164,7 @@ impl Card {
             if !message.is_empty() {
                 return message;
             }
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
             if card.over_cable() {
                 return if card.cable_target.with(Option::is_some) {
                     "Destination: Android Downloads.".into()
@@ -188,13 +178,13 @@ impl Card {
     }
 
     pub(crate) fn over_cable(&self) -> bool {
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
         return self.cable_mode.get();
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(any(target_os = "windows", all(unix, feature = "unix-mtp"))))]
         false
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
     pub(crate) fn transport_switch(&self) -> View {
         let label = self.clone();
         let busy = self.clone();
@@ -223,7 +213,7 @@ impl Card {
         })
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
     fn check_cable(&self) {
         if self.busy() || !self.over_cable() {
             return;
@@ -269,7 +259,7 @@ impl Card {
         if self.busy() {
             return;
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
         {
             self.cable_mode.set(false);
             self.cable_target.set(None);
@@ -279,7 +269,6 @@ impl Card {
         self.status.set(String::new());
     }
 
-    #[cfg(target_os = "windows")]
     pub(crate) fn can_send_trusted(&self) -> bool {
         !self.busy()
             && !self.over_cable()
@@ -288,7 +277,6 @@ impl Card {
                 .with(|paths| (1..=MAX_FILES).contains(&paths.len()))
     }
 
-    #[cfg(target_os = "windows")]
     pub(crate) fn send_trusted(&self, id: [u8; 32]) -> bool {
         if !self.can_send_trusted() {
             return false;
@@ -412,7 +400,7 @@ impl Card {
         if total == 0 || total > MAX_FILES {
             return;
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
         if cable {
             if let Some(target) = self.cable_target.get() {
                 self.transfer(true, total, move |cancel, progress| {
@@ -471,9 +459,7 @@ impl Card {
         let Ok(rx) = self.worker.spawn("sliploom-send", move |cancel| {
             work(cancel, &worker_progress)
         }) else {
-            let one_time = !cable;
-            #[cfg(target_os = "windows")]
-            let one_time = one_time && self.active_trusted_label.with(Option::is_none);
+            let one_time = !cable && self.active_trusted_label.with(Option::is_none);
             self.fail_transfer(if one_time {
                 "Couldn’t start the sender. Get a new one-time code from the receiver."
             } else {
@@ -489,9 +475,7 @@ impl Card {
                         match outcome {
                             TransferOutcome::Wifi(outcome) => card.finish(batch_message(outcome, false)),
                             TransferOutcome::Legacy(outcome) => card.finish(legacy_message(outcome)),
-                            #[cfg(target_os = "windows")]
                             TransferOutcome::Trusted(outcome) => card.finish(batch_message(outcome, true)),
-                            #[cfg(target_os = "windows")]
                             TransferOutcome::TrustedUnavailable => {
                                 let message = if card.worker.cancel.load(Ordering::Acquire) {
                                     "Send cancelled."
@@ -500,7 +484,7 @@ impl Card {
                                 };
                                 card.finish(message.into());
                             }
-                            #[cfg(target_os = "windows")]
+                            #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
                             TransferOutcome::Cable(outcome) => {
                                 let confirmed = outcome.confirmed;
                                 match outcome.result {
@@ -512,7 +496,7 @@ impl Card {
                         return;
                     }
                     Err(TryRecvError::Disconnected) => {
-                        #[cfg(target_os = "windows")]
+                        #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
                         if cable {
                             let confirmed = progress.confirmed.load(Ordering::Acquire);
                             card.fail_transfer(&format!("USB confirmed {confirmed}/{total} copies. Check Downloads before retrying."));
@@ -524,7 +508,7 @@ impl Card {
                     Err(TryRecvError::Empty) => {
                         if card.activity.get() == Activity::Transferring {
                             let bytes = progress.bytes.load(Ordering::Acquire);
-                            #[cfg(target_os = "windows")]
+                            #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
                             if cable {
                                 let confirmed = progress.confirmed.load(Ordering::Acquire);
                                 if bytes > 0 || confirmed > 0 {
@@ -532,10 +516,7 @@ impl Card {
                                 }
                             }
                             if !cable && progress.connected.load(Ordering::Acquire) {
-                                #[cfg(target_os = "windows")]
                                 let trusted = card.active_trusted_label.with(Option::is_some);
-                                #[cfg(not(target_os = "windows"))]
-                                let trusted = false;
                                 card.update_status(if bytes == 0 && !trusted {
                                     format!("Connected · {} · check the receiver", file_count(total))
                                 } else {
@@ -557,7 +538,7 @@ impl Card {
     }
 
     fn fail_transfer(&self, message: &str) {
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
         if self.over_cable() {
             self.cable_target.set(None);
         }
@@ -575,7 +556,6 @@ impl Card {
     fn finish(&self, message: String) {
         self.worker.join();
         self.active_target.set(None);
-        #[cfg(target_os = "windows")]
         self.active_trusted_label.set(None);
         self.status.set(message);
         self.activity.set(Activity::Idle);
@@ -635,11 +615,11 @@ impl Card {
                         (transport.over_cable(), active)
                     },
                     move |(cable, active), _| {
-                        #[cfg(target_os = "windows")]
+                        #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
                         if cable {
                             return controls.cable_entry(active);
                         }
-                        #[cfg(not(target_os = "windows"))]
+                        #[cfg(not(any(target_os = "windows", all(unix, feature = "unix-mtp"))))]
                         let _ = cable;
                         if active {
                             return column()
@@ -668,7 +648,6 @@ impl Card {
     }
 
     fn wifi_hint(&self) -> Option<String> {
-        #[cfg(target_os = "windows")]
         if let Some(label) = self.active_trusted_label.get() {
             return Some(format!("Destination: {label}"));
         }
@@ -688,7 +667,6 @@ impl Card {
                 if !self.status.with(String::is_empty) {
                     return None;
                 }
-                #[cfg(target_os = "windows")]
                 if self.trusted.available() {
                     return Some(
                         "Use the full code or QR from Receive, or send from Trusted devices."
@@ -709,7 +687,7 @@ impl Card {
             .on_click(move || cancel.stop())
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", all(unix, feature = "unix-mtp")))]
     fn cable_entry(&self, active: bool) -> View {
         let target = self.cable_target.clone();
         let action = if active {

@@ -12,11 +12,16 @@ import java.net.InetAddress
 import java.security.MessageDigest
 
 internal const val MAX_TRUSTED_PEERS = 16
+private const val TRUST_PLATFORM_WINDOWS = 1
 internal const val TRUST_PLATFORM_ANDROID = 2
+private const val TRUST_PLATFORM_MACOS = 3
+private const val TRUST_PLATFORM_LINUX = 4
 
 internal fun trustPlatformLabel(platform: Int): String? = when (platform) {
-    1 -> "Windows"
+    TRUST_PLATFORM_WINDOWS -> "Windows"
     TRUST_PLATFORM_ANDROID -> "Android"
+    TRUST_PLATFORM_MACOS -> "macOS"
+    TRUST_PLATFORM_LINUX -> "Linux"
     else -> null
 }
 

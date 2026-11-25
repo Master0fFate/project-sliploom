@@ -1,12 +1,19 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::ffi::c_void;
+#[cfg(windows)]
 use std::fs::{self, OpenOptions};
+#[cfg(windows)]
 use std::io;
 use std::net::Ipv4Addr;
+#[cfg(windows)]
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -16,7 +23,9 @@ use std::time::{Duration, Instant};
 use qrcode::QrCode;
 use receiver_service::lan::Receipt;
 use receiver_service::lan::trust::{PairPrompt, Peer, Trust};
+#[cfg(windows)]
 use windows::Win32::Foundation::HANDLE;
+#[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_DEVICE, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FileDispositionInfo,
@@ -27,9 +36,16 @@ use zgx::reactive::Signal;
 use zgx::scene::Color;
 use zgx_desktop::WindowContext;
 
+#[cfg(windows)]
+use crate::cable_ui;
 use crate::history::History;
 use crate::material::{metadata, quiet_action, receive_primary};
-use crate::{cable_ui, inline_status, invitation_qr, likely_address, send_ui};
+use crate::{inline_status, invitation_qr, likely_address, send_ui};
+
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix::{Foreground, ForegroundWatch, open_destination};
 
 type Id = [u8; 32];
 type Cancel = Arc<AtomicBool>;
@@ -39,16 +55,22 @@ const PAIR_WINDOW: Duration = Duration::from_secs(120);
 const PAIR_FINISH: Duration = Duration::from_secs(2);
 const PROBE_INTERVAL: Duration = Duration::from_secs(3);
 const LISTENER_RETRY: Duration = Duration::from_secs(10);
+#[cfg(windows)]
 const RECEIVE_FLAG: &str = "trusted-receive-opt-in.v1.flag";
 const READY_FOR: Duration = Duration::from_secs(12);
 const PAIR_RETRY: &str =
     "Pairing didn’t finish. If either device lists the other, forget it and pair again.";
 
+#[cfg(windows)]
 type Hwnd = *mut c_void;
+#[cfg(windows)]
 type WinEvent = unsafe extern "system" fn(usize, u32, Hwnd, i32, i32, u32, u32);
+#[cfg(windows)]
 const EVENT_SYSTEM_FOREGROUND: u32 = 3;
+#[cfg(windows)]
 const WINEVENT_OUTOFCONTEXT: u32 = 0;
 
+#[cfg(windows)]
 #[link(name = "user32")]
 unsafe extern "system" {
     fn GetActiveWindow() -> Hwnd;
@@ -66,6 +88,7 @@ unsafe extern "system" {
     fn UnhookWinEvent(hook: usize) -> i32;
 }
 
+#[cfg(windows)]
 #[derive(Clone)]
 struct Foreground {
     hwnd: usize,
@@ -73,6 +96,7 @@ struct Foreground {
     lost: Cancel,
 }
 
+#[cfg(windows)]
 impl Foreground {
     fn is_current(&self) -> bool {
         let mut process = 0;
@@ -85,10 +109,12 @@ impl Foreground {
     }
 }
 
+#[cfg(windows)]
 thread_local! {
     static WATCH: RefCell<Option<(usize, Foreground)>> = const { RefCell::new(None) };
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn foreground_changed(
     hook: usize,
     _: u32,
@@ -109,11 +135,13 @@ unsafe extern "system" fn foreground_changed(
     });
 }
 
+#[cfg(windows)]
 struct ForegroundWatch {
     hook: usize,
     key: Foreground,
 }
 
+#[cfg(windows)]
 impl ForegroundWatch {
     fn capture() -> Option<Self> {
         let hwnd = unsafe { GetActiveWindow() };
@@ -146,6 +174,7 @@ impl ForegroundWatch {
     }
 }
 
+#[cfg(windows)]
 impl Drop for ForegroundWatch {
     fn drop(&mut self) {
         self.key.lost.store(true, Ordering::Release);
@@ -191,9 +220,18 @@ impl Workers {
 
 pub(crate) struct Profile {
     trust: Trust,
+    #[cfg(windows)]
     directory: cable_ui::Folder,
 }
 
+#[cfg(unix)]
+pub(crate) fn open() -> Option<Profile> {
+    let directory = unix::open_trust_directory().ok()?;
+    let trust = Trust::open(&directory).ok()?;
+    Some(Profile { trust })
+}
+
+#[cfg(windows)]
 pub(crate) fn open() -> Option<Profile> {
     let local = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
     let directory = cable_ui::open_trust_directory(&local, has_legacy_state).ok()?;
@@ -201,6 +239,7 @@ pub(crate) fn open() -> Option<Profile> {
     Some(Profile { trust, directory })
 }
 
+#[cfg(windows)]
 fn has_legacy_state(directory: &Path) -> io::Result<bool> {
     for name in ["identity.dpapi", "peers.dpapi", RECEIVE_FLAG] {
         match fs::symlink_metadata(directory.join(name)) {
@@ -212,6 +251,7 @@ fn has_legacy_state(directory: &Path) -> io::Result<bool> {
     Ok(false)
 }
 
+#[cfg(windows)]
 fn receive_opt_in(path: &Path, clear: bool) -> io::Result<bool> {
     let file = match OpenOptions::new()
         .access_mode(FILE_GENERIC_READ.0 | DELETE.0)
@@ -247,6 +287,12 @@ fn receive_opt_in(path: &Path, clear: bool) -> io::Result<bool> {
         }?;
     }
     Ok(true)
+}
+
+#[cfg(windows)]
+fn create_receive_flag(path: &Path) -> io::Result<()> {
+    OpenOptions::new().write(true).create_new(true).open(path)?;
+    Ok(())
 }
 
 struct Lease {
@@ -380,6 +426,7 @@ struct State {
     input: Signal<String>,
     qr: RefCell<Option<QrCode>>,
     receive: Signal<Receive>,
+    #[cfg(windows)]
     receive_flag: Option<PathBuf>,
     receive_status: Signal<String>,
     save_folder: Arc<Mutex<Option<PathBuf>>>,
@@ -389,6 +436,8 @@ struct State {
     forgetting: Signal<bool>,
     list_scroll: Signal<f32>,
     foreground: RefCell<Option<ForegroundWatch>>,
+    #[cfg(unix)]
+    window_active: Signal<bool>,
     attempt: RefCell<Option<Attempt>>,
     request: RefCell<Option<Approval>>,
     armed: Arc<Mutex<Option<Arc<Lease>>>>,
@@ -416,12 +465,22 @@ impl Panel {
         });
         let (events, rx) = mpsc::channel();
         let trust = profile.map(|profile| profile.trust.clone());
+        #[cfg(windows)]
         let receive_flag = profile.map(|profile| profile.directory.path.join(RECEIVE_FLAG));
-        let (receive, receive_status) = match receive_flag
+        #[cfg(windows)]
+        let saved_permission = receive_flag
             .as_deref()
-            .map(|path| receive_opt_in(path, false))
-        {
+            .map(|path| receive_opt_in(path, false));
+        #[cfg(unix)]
+        let saved_permission = trust.as_ref().map(Trust::receive_opt_in);
+        let (receive, receive_status) = match saved_permission {
             Some(Ok(true)) => (Receive::Waiting, ""),
+            #[cfg(unix)]
+            Some(Err(_)) => (
+                Receive::RevokeFailed,
+                "Can’t verify the saved trusted receive permission. Trusted receive is off. Try clearing the permission.",
+            ),
+            #[cfg(windows)]
             Some(Err(_)) => (
                 Receive::Off,
                 "Can’t read the trusted receive setting. Trusted receive is off.",
@@ -439,6 +498,7 @@ impl Panel {
             input: rt.signal(String::new()),
             qr: RefCell::default(),
             receive: rt.signal(receive),
+            #[cfg(windows)]
             receive_flag,
             receive_status: rt.signal(receive_status.into()),
             save_folder,
@@ -448,6 +508,8 @@ impl Panel {
             forgetting: rt.signal(false),
             list_scroll: rt.signal(0.),
             foreground: RefCell::default(),
+            #[cfg(unix)]
+            window_active: cx.ui.observe_window_active(),
             attempt: RefCell::default(),
             request: RefCell::default(),
             armed: Arc::default(),
@@ -462,11 +524,29 @@ impl Panel {
                 watch.dismiss();
             }
         });
+        #[cfg(unix)]
+        let focus_effect = {
+            let active = panel.0.window_active.clone();
+            let state = Rc::downgrade(&panel.0);
+            rt.effect(move || {
+                let _ = active.get();
+                if let Some(state) = state.upgrade() {
+                    if let Some(watch) = state.foreground.borrow().as_ref() {
+                        watch.invalidate();
+                    }
+                    if let Some(attempt) = state.attempt.borrow().as_ref() {
+                        attempt.lease.cancel.store(true, Ordering::Release);
+                    }
+                }
+            })
+        };
         cx.on_closed(move || {
             closed.0.workers.cancel();
             closed.dismiss();
             drop(dismissal);
             drop(folder_effect);
+            #[cfg(unix)]
+            drop(focus_effect);
         });
         panel.0.refresh_devices();
         panel
@@ -553,7 +633,11 @@ impl Panel {
     }
 
     fn show(&self) {
-        let Some(watch) = ForegroundWatch::capture() else {
+        #[cfg(windows)]
+        let watch = ForegroundWatch::capture();
+        #[cfg(unix)]
+        let watch = ForegroundWatch::capture(self.0.window_active.get());
+        let Some(watch) = watch else {
             return;
         };
         self.0.foreground.replace(Some(watch));
@@ -600,14 +684,23 @@ impl Panel {
         if !self.has_foreground() || state.receive.get() != Receive::Off {
             return;
         }
-        let saved = state.receive_flag.as_ref().is_some_and(|path| {
-            OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-                .is_ok()
-        });
+        #[cfg(windows)]
+        let saved = state
+            .receive_flag
+            .as_deref()
+            .is_some_and(|path| create_receive_flag(path).is_ok());
+        #[cfg(unix)]
+        let saved = state
+            .trust
+            .as_ref()
+            .is_some_and(|trust| trust.set_receive_opt_in(true).is_ok());
         if !saved {
+            #[cfg(unix)]
+            {
+                state.receive.set(Receive::RevokeFailed);
+                state.receive_status.set("Can’t confirm that trusted receive permission was saved. Trusted receive is off. Try clearing the permission before restarting Sliploom.".into());
+            }
+            #[cfg(windows)]
             state
                 .receive_status
                 .set("Can’t save the trusted receive setting. Trusted receive is off.".into());
@@ -623,6 +716,24 @@ impl Panel {
             return;
         };
         state.next_listener.set(Instant::now() + LISTENER_RETRY);
+        #[cfg(unix)]
+        {
+            let selected = state
+                .save_folder
+                .lock()
+                .expect("save folder lock poisoned")
+                .clone();
+            if open_destination(selected)
+                .ok()
+                .and_then(|folder| trust.receive_destination(&folder))
+                .is_none()
+            {
+                state
+                    .receive_status
+                    .set("Trusted receive is waiting for a valid save folder.".into());
+                return;
+            }
+        }
         let Some(address) = likely_address() else {
             state
                 .receive_status
@@ -639,7 +750,14 @@ impl Panel {
                 address,
                 || {
                     let selected = save_folder.lock().expect("save folder lock poisoned").clone();
-                    cable_ui::open_destination(selected.as_deref(), true)
+                    #[cfg(windows)]
+                    {
+                        cable_ui::open_destination(selected.as_deref(), true)
+                    }
+                    #[cfg(unix)]
+                    {
+                        open_destination(selected)
+                    }
                 },
                 &stop,
                 |prompt| {
@@ -672,10 +790,16 @@ impl Panel {
             false
         };
         self.end_pair(true);
+        #[cfg(windows)]
         let cleared = state
             .receive_flag
             .as_ref()
             .is_some_and(|path| receive_opt_in(path, true).is_ok());
+        #[cfg(unix)]
+        let cleared = state
+            .trust
+            .as_ref()
+            .is_some_and(|trust| trust.set_receive_opt_in(false).is_ok());
         if cleared {
             state.receive.set(if running {
                 Receive::Stopping
@@ -841,7 +965,11 @@ impl Panel {
             }
             state.status.set(
                 if settled {
-                    "Device saved on this PC. If it isn’t listed on the phone, forget it here and pair again."
+                    if cfg!(windows) {
+                        "Device saved on this PC. If it isn’t listed on the phone, forget it here and pair again."
+                    } else {
+                        "Device saved on this computer. If it isn’t listed on the phone, forget it here and pair again."
+                    }
                 } else {
                     PAIR_RETRY
                 }
@@ -1167,7 +1295,11 @@ impl Panel {
                     .child(metadata(text(format!("Pair with {}?", display_label(&request.prompt.label))).heading(3)))
                     .child(metadata(text("Does Sliploom on your phone show the same confirmation code?")))
                     .child(text(request.prompt.code.clone()).heading(3))
-                    .child(metadata(text("When trusted receive is on, this device can send to this PC without another prompt.")))
+                    .child(metadata(text(if cfg!(windows) {
+                        "When trusted receive is on, this device can send to this PC without another prompt."
+                    } else {
+                        "When trusted receive is on, this device can send to this computer without another prompt."
+                    })))
                     .child(row().gap(8.)
                         .child(receive_primary("Yes, trust device").on_click(move || yes.answer(&approve, true)))
                         .child(quiet_action(text("No")).on_click(move || no.answer(&reject, false))))
@@ -1239,7 +1371,11 @@ impl Panel {
                         .child(quiet_action(text("Forget")).disabled_when(move || busy.get()).on_click(move || forget.forget(id)))
                 })))
             }).display_contents())
-            .child(metadata(text("Allow trusted devices to save to the same folder as Receive once and cable receive without asking while Sliploom is open. This permission stays on until you stop trusted receive.")))
+            .child(metadata(text(if cfg!(windows) {
+                "Allow trusted devices to save to the same folder as Receive once and cable receive without asking while Sliploom is open. This permission stays on until you stop trusted receive."
+            } else {
+                "Allow trusted devices to save to your selected folder without asking while Sliploom is open. This permission stays on until you stop trusted receive."
+            })))
             .child(row().gap(4.).child(quiet_action(text_signal(move || match receive.get() {
                 Receive::Off => "Allow trusted receive",
                 Receive::Waiting | Receive::Allowed => "Stop trusted receive",
