@@ -1,0 +1,125 @@
+name: Package signed Android release
+
+"on":
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    environment: android-release
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUILD_TOOLS_VERSION: '35.0.0'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android SDK and build tools
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;$BUILD_TOOLS_VERSION"'
+
+      - name: Assemble and lint unsigned release APK
+        working-directory: apps/android
+        run: bash ./gradlew --no-daemon :app:assembleRelease :app:lintRelease
+
+      - name: Check and align unsigned APK
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'Expected a bare numeric release version (X.Y.Z).' >&2
+            exit 1
+          fi
+          unsigned=apps/android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if [[ ! -s "$unsigned" ]]; then
+            echo 'Unsigned release APK is missing or empty.' >&2
+            exit 1
+          fi
+          tools="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
+          badging=$("$tools/aapt2" dump badging "$unsigned")
+          package_line=$(grep '^package: ' <<< "$badging")
+          package_pattern="^package: name='([^']+)' versionCode='[0-9]+' versionName='([^']*)'([[:space:]]|$)"
+          if [[ ! "$package_line" =~ $package_pattern ]] ||
+             [[ "${BASH_REMATCH[1]}" != org.projectseam.android || "${BASH_REMATCH[2]}" != "$RELEASE_VERSION" ]]; then
+            echo 'Release APK package or version does not match the expected value.' >&2
+            exit 1
+          fi
+          if grep -qE '^application-debuggable([[:space:]]|$)' <<< "$badging"; then
+            echo 'Release APK is debuggable.' >&2
+            exit 1
+          fi
+          "$tools/zipalign" -P 16 4 "$unsigned" "$RUNNER_TEMP/sliploom-android-aligned.apk"
+
+      - name: Sign release APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          : "${ANDROID_KEYSTORE_BASE64:?Missing ANDROID_KEYSTORE_BASE64}"
+          : "${ANDROID_KEYSTORE_PASSWORD:?Missing ANDROID_KEYSTORE_PASSWORD}"
+          : "${ANDROID_KEY_ALIAS:?Missing ANDROID_KEY_ALIAS}"
+          : "${ANDROID_KEY_PASSWORD:?Missing ANDROID_KEY_PASSWORD}"
+          umask 077
+          keystore=$(mktemp "$RUNNER_TEMP/sliploom-android-keystore.XXXXXX")
+          trap 'rm -f -- "$keystore"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          unset ANDROID_KEYSTORE_BASE64
+          mkdir -p "$RUNNER_TEMP/release-android"
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner" sign \
+            --ks "$keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
+            --v4-signing-enabled false --out "$RUNNER_TEMP/release-android/sliploom-android.apk" \
+            "$RUNNER_TEMP/sliploom-android-aligned.apk"
+
+      - name: Verify signer and write checksum
+        env:
+          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+        run: |
+          expected=${ANDROID_RELEASE_CERT_SHA256//:/}
+          expected=${expected,,}
+          if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+            echo 'Configure ANDROID_RELEASE_CERT_SHA256 as 64 lowercase hex digits without colons.' >&2
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/release-android"
+          tools="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
+          "$tools/zipalign" -c -P 16 4 sliploom-android.apk
+          verification=$("$tools/apksigner" verify --verbose --print-certs sliploom-android.apk)
+          if [[ $(grep '^Number of signers:' <<< "$verification") != 'Number of signers: 1' ]]; then
+            echo 'Expected exactly one APK signer.' >&2
+            exit 1
+          fi
+          signer=$(grep -E '^Signer #[0-9]+ certificate SHA-256 digest: ' <<< "$verification")
+          actual=${signer#Signer \#1 certificate SHA-256 digest: }
+          actual=${actual//:/}
+          if [[ "${actual,,}" != "$expected" ]]; then
+            echo 'APK signer certificate SHA-256 does not match ANDROID_RELEASE_CERT_SHA256.' >&2
+            exit 1
+          fi
+          sha256sum sliploom-android.apk > sliploom-android.apk.sha256
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-android
+          path: |
+            ${{ runner.temp }}/release-android/sliploom-android.apk
+            ${{ runner.temp }}/release-android/sliploom-android.apk.sha256
+          if-no-files-found: error
+          compression-level: 0

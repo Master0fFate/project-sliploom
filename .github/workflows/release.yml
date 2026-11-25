@@ -1,0 +1,156 @@
+name: Publish Sliploom release
+
+"on":
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (x.y.z, without v)
+        type: string
+        required: true
+        default: '1.0.0'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Validate release branch and version
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ -z "$DEFAULT_BRANCH" || "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo 'Releases must be dispatched on the default branch.' >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'Expected a release version in x.y.z format, without a v prefix.' >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+        id: request
+    outputs:
+      version: ${{ steps.request.outputs.version }}
+
+  checks:
+    needs: validate
+    uses: ./.github/workflows/build.yml
+
+  desktop:
+    needs: [validate, checks]
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ needs.validate.outputs.version }}
+
+  android:
+    needs: [validate, checks]
+    uses: ./.github/workflows/android-release.yml
+    with:
+      version: ${{ needs.validate.outputs.version }}
+
+  publish:
+    needs: [validate, checks, desktop, android]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: sliploom-release-publish
+      cancel-in-progress: false
+    steps:
+      - name: Download release artifacts from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Verify release assets and publish
+        shell: bash
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          fail() {
+            printf '%s\n' "$*" >&2
+            exit 1
+          }
+
+          packages=(
+            sliploom-android.apk
+            sliploom-windows-x64.exe
+            sliploom-linux-amd64.deb
+            sliploom-macos-arm64.dmg
+          )
+          assets=()
+          for package in "${packages[@]}"; do
+            sidecar="$package.sha256"
+            for file in "$package" "$sidecar"; do
+              [[ -f "$file" && ! -L "$file" && -s "$file" ]] || fail "Missing or invalid asset: $file"
+            done
+            mapfile -t checksum < "$sidecar"
+            [[ ${#checksum[@]} == 1 ]] || fail "Expected one checksum in $sidecar"
+            line=${checksum[0]%$'\r'}
+            recorded_hash=${line:0:64}
+            actual=$(sha256sum -- "$package")
+            [[ "${recorded_hash,,}" == "${actual%% *}" ]] || fail "Checksum mismatch in $sidecar"
+            [[ "${line:64}" == "  $package" || "${line:64}" == " *$package" ]] || fail "Wrong filename or format in $sidecar"
+            assets+=("$package" "$sidecar")
+          done
+
+          tag="v$RELEASE_VERSION"
+          repo="repos/$GITHUB_REPOSITORY"
+          tag_refs() {
+            gh api "$repo/git/matching-refs/tags/$tag" |
+              jq -ce --arg ref "refs/tags/$tag" 'map(select(.ref == $ref))'
+          }
+          matching_releases() {
+            gh api --paginate --slurp "$repo/releases?per_page=100" |
+              jq -ce --arg tag "$tag" '[.[][] | select(.tag_name == $tag)]'
+          }
+          refs=$(tag_refs)
+          [[ "$refs" == '[]' ]] || fail "Tag $tag already exists."
+          releases=$(matching_releases)
+          [[ "$releases" == '[]' ]] || fail "A release for $tag already exists."
+
+          notes="$RUNNER_TEMP/sliploom-release-notes.md"
+          tee "$notes" >/dev/null <<'NOTES'
+          ### Platforms and trust
+
+          - Android and Windows x64 have Wi-Fi development builds. Android Wi-Fi transfers require Android 10 or later. USB and desktop Trusted Devices are Windows-only.
+          - macOS 15 (Apple Silicon) and Ubuntu 24.04 (amd64) are build and package targets; native transfers on those platforms have not been verified.
+          - The Windows installer is not Authenticode signed. The macOS app has no Developer ID signature and is not notarized. Windows SmartScreen or macOS Gatekeeper may warn or block installation. The SHA-256 files verify the downloaded bytes, not the publisher's identity.
+          NOTES
+
+          gh release create "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --draft --title "Sliploom $tag" --generate-notes --notes-file "$notes"
+
+          releases=$(matching_releases)
+          release_id=$(jq -er --arg sha "$GITHUB_SHA" '
+            select(length == 1) | .[0] |
+            select(.draft == true and .prerelease == false and .target_commitish == $sha) | .id
+          ' <<< "$releases") || fail 'Could not verify a unique draft release targeting this commit.'
+
+          expected_names=$(jq -n --args '$ARGS.positional | sort' "${assets[@]}")
+          gh api --paginate --slurp "$repo/releases/$release_id/assets?per_page=100" |
+            jq -e --argjson expected "$expected_names" '
+              add | (map(.name) | sort) == $expected and all(.[]; .state == "uploaded" and .size > 0)
+            ' >/dev/null || fail 'Draft assets are incomplete, unexpected, or not uploaded.'
+
+          gh api --method POST "$repo/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" |
+            jq -e --arg ref "refs/tags/$tag" --arg sha "$GITHUB_SHA" '
+              .ref == $ref and .object.type == "commit" and .object.sha == $sha
+            ' >/dev/null || fail "Could not reserve $tag at $GITHUB_SHA. The release is still a draft."
+
+          gh api --method PATCH "$repo/releases/$release_id" -F draft=false -f make_latest=true |
+            jq -e --arg tag "$tag" '.draft == false and .prerelease == false and .tag_name == $tag' >/dev/null
+
+          refs=$(tag_refs)
+          jq -e --arg sha "$GITHUB_SHA" '
+            length == 1 and .[0].object.type == "commit" and .[0].object.sha == $sha
+          ' <<< "$refs" >/dev/null || fail "Published tag $tag does not resolve to $GITHUB_SHA."

@@ -9,7 +9,7 @@ SetCompressor /SOLID lzma
 
 VIProductVersion "${PRODUCT_VERSION}.0"
 VIAddVersionKey /LANG=1033 "ProductName" "Sliploom"
-VIAddVersionKey /LANG=1033 "FileDescription" "Sliploom test installer"
+VIAddVersionKey /LANG=1033 "FileDescription" "Sliploom installer"
 VIAddVersionKey /LANG=1033 "FileVersion" "${PRODUCT_VERSION}.0"
 VIAddVersionKey /LANG=1033 "ProductVersion" "${PRODUCT_VERSION}"
 

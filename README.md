@@ -7,10 +7,10 @@
   <a href="#send-and-receive-batches-over-wi-fi">Wi-Fi</a> ·
   <a href="#usb-on-windows">USB</a> ·
   <a href="#build-locally">Build locally</a> ·
-  <a href="#ci-artifacts">CI artifacts</a>
+  <a href="#downloads">Downloads</a>
 </p>
 
-**Not released.** Android and Windows have Wi-Fi development builds. macOS (Apple Silicon) and Ubuntu 24.04 (x64) are build and package targets; native transfers on those platforms haven’t been verified. USB and desktop Trusted Devices remain Windows-only. See the [transfer test results](docs/TESTING/LAN_PROOF.md) for the routes exercised so far.
+Check [GitHub Releases](https://github.com/Master0fFate/project-sliploom/releases) for public downloads when available. Android and Windows are the Wi-Fi transfer targets tested so far. macOS (Apple Silicon) and Ubuntu 24.04 (x64) are build and package targets; native transfers on those platforms haven’t been verified. USB and desktop Trusted Devices remain Windows-only. See the [transfer test results](docs/TESTING/LAN_PROOF.md) for the routes exercised so far.
 
 ## Send and receive batches over Wi-Fi
 
@@ -69,12 +69,19 @@ Use JDK 21, Android SDK Platform 36, and Build Tools 35.0.0. Point `ANDROID_HOME
 
 On macOS or Linux, use `./gradlew --no-daemon :app:assembleDebug :app:lintDebug` instead. Install the local debug APK from `apps/android/app/build/outputs/apk/debug/app-debug.apk` on your Android device. Android CI builds the same debug variant without signing and runs lint; it does not test on a device.
 
-## CI artifacts
+## Downloads
 
-Run [Package desktop candidates](https://github.com/Master0fFate/project-sliploom/actions/workflows/package.yml) manually and open **Artifacts** on the completed run. Each archive contains an unsigned test package and its SHA-256 checksum:
+When a public release is published, its [GitHub Releases](https://github.com/Master0fFate/project-sliploom/releases) page lists these assets, each with a matching `.sha256` file:
 
-- **Windows x64:** NSIS installer (`.exe`).
-- **macOS Apple Silicon:** disk image (`.dmg`) containing `Sliploom.app`, not notarized.
-- **Ubuntu 24.04 x64:** Debian package (`.deb`).
+| Platform | Asset |
+| --- | --- |
+| Android | `sliploom-android.apk` |
+| Windows x64 | `sliploom-windows-x64.exe` |
+| Ubuntu 24.04 x64 | `sliploom-linux-amd64.deb` |
+| macOS Apple Silicon | `sliploom-macos-arm64.dmg` |
 
-These are GitHub Actions artifacts, not a public release or evidence of runtime support. See [build and packaging](docs/RELEASE_PIPELINE.md) for workflow details and checksum instructions.
+The Android release APK is signed. Android only accepts an in-place upgrade of `org.projectseam.android` signed with the same key. A debug or differently signed install cannot be upgraded in place with the release APK; uninstalling it may delete app data.
+
+The Windows installer is unsigned, and the macOS DMG has no Developer ID signature or notarization. Either may trigger OS security prompts.
+
+For desktop test builds, run [Package desktop candidates](https://github.com/Master0fFate/project-sliploom/actions/workflows/package.yml) manually and download from **Artifacts** on the completed run. These are not public releases. See [desktop packaging](packaging/README.md) for installation and [the release pipeline](docs/RELEASE_PIPELINE.md) for checksum instructions.
