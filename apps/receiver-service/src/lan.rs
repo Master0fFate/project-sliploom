@@ -174,7 +174,7 @@ impl ReceiveSession {
         batch::receive(&mut stream, &folder, approve, saved, progress, None)
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     fn receive_batch_trusted(
         self,
         cancelled: Cancellation<'_>,

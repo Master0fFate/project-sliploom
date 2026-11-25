@@ -1,8 +1,8 @@
+#[cfg(windows)]
+use std::{ffi::c_void, ptr};
 use std::{
-    ffi::c_void,
     fmt, io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream},
-    ptr,
     sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
@@ -17,7 +17,7 @@ use rustls::{
     crypto::{WebPkiSupportedAlgorithms, verify_tls13_signature},
     pki_types::{CertificateDer, ServerName, UnixTime},
     server::{
-        NoServerSessionStorage, ParsedCertificate,
+        NoServerSessionStorage,
         danger::{ClientCertVerified, ClientCertVerifier},
     },
     sign::SingleCertAndKey,
@@ -173,12 +173,12 @@ impl ServerCertVerifier for VerifyServer {
         chain: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp: &[u8],
-        _now: UnixTime,
+        now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, Error> {
         if !bool::from(self.pin.ct_eq(&hash(leaf))) {
             return Err(unauthorized());
         }
-        verify_leaf(leaf, chain)?;
+        verify_leaf(leaf, chain, now, &self.algorithms, LeafUsage::Server)?;
         Ok(ServerCertVerified::assertion())
     }
 
@@ -225,7 +225,7 @@ impl ClientCertVerifier for VerifyClient {
         &self,
         leaf: &CertificateDer<'_>,
         chain: &[CertificateDer<'_>],
-        _now: UnixTime,
+        now: UnixTime,
     ) -> std::result::Result<ClientCertVerified, Error> {
         let trust = &self.trust;
         let id = hash(leaf);
@@ -235,7 +235,7 @@ impl ClientCertVerifier for VerifyClient {
                 return Err(unauthorized());
             }
         }
-        verify_leaf(leaf, chain)?;
+        verify_leaf(leaf, chain, now, &self.algorithms, LeafUsage::Client)?;
         Ok(ClientCertVerified::assertion())
     }
 
@@ -266,14 +266,58 @@ fn unauthorized() -> Error {
     Error::InvalidCertificate(CertificateError::ApplicationVerificationFailure)
 }
 
+enum LeafUsage {
+    Client,
+    Server,
+}
+
 fn verify_leaf(
     leaf: &CertificateDer<'_>,
     chain: &[CertificateDer<'_>],
+    now: UnixTime,
+    algorithms: &WebPkiSupportedAlgorithms,
+    usage: LeafUsage,
 ) -> std::result::Result<(), Error> {
     if !chain.is_empty() || !(1..=MAX_LEAF_SIZE).contains(&leaf.len()) {
         return Err(unauthorized());
     }
-    let _ = ParsedCertificate::try_from(leaf)?;
+    verify_validity(leaf, now, algorithms, usage)
+}
+
+#[cfg(unix)]
+fn verify_validity(
+    leaf: &CertificateDer<'_>,
+    now: UnixTime,
+    algorithms: &WebPkiSupportedAlgorithms,
+    usage: LeafUsage,
+) -> std::result::Result<(), Error> {
+    let map_error = |error| {
+        Error::InvalidCertificate(match error {
+            webpki::Error::CertNotValidYet { .. } => CertificateError::NotValidYet,
+            webpki::Error::CertExpired { .. } => CertificateError::Expired,
+            webpki::Error::BadDer | webpki::Error::BadDerTime => CertificateError::BadEncoding,
+            _ => CertificateError::ApplicationVerificationFailure,
+        })
+    };
+    let cert = webpki::EndEntityCert::try_from(leaf).map_err(map_error)?;
+    let anchor = webpki::anchor_from_trusted_cert(leaf).map_err(map_error)?;
+    let usage = match usage {
+        LeafUsage::Client => webpki::KeyUsage::client_auth(),
+        LeafUsage::Server => webpki::KeyUsage::server_auth(),
+    };
+    cert.verify_for_usage(algorithms.all, &[anchor], &[], now, usage, None, None)
+        .map_err(map_error)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn verify_validity(
+    leaf: &CertificateDer<'_>,
+    _: UnixTime,
+    _: &WebPkiSupportedAlgorithms,
+    _: LeafUsage,
+) -> std::result::Result<(), Error> {
+    let _ = rustls::server::ParsedCertificate::try_from(leaf)?;
     let context = unsafe { CertCreateCertificateContext(1, leaf.as_ptr(), leaf.len() as u32) };
     if context.is_null() {
         return Err(Error::InvalidCertificate(CertificateError::BadEncoding));
@@ -287,6 +331,7 @@ fn verify_leaf(
     }
 }
 
+#[cfg(windows)]
 #[repr(C)]
 struct CertificateContext {
     encoding: u32,
@@ -296,6 +341,7 @@ struct CertificateContext {
     store: *mut c_void,
 }
 
+#[cfg(windows)]
 #[link(name = "crypt32")]
 unsafe extern "system" {
     fn CertCreateCertificateContext(

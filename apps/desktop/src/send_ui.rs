@@ -22,9 +22,9 @@ use zgx::semantics::Live;
 use zgx_desktop::{FileDialogOptions, FileDialogs, FileFilter, TaskSpawner, WindowContext};
 
 use crate::material::{metadata, quiet_action, receive_primary};
-use crate::{byte_size, file_count, inline_status};
 #[cfg(target_os = "windows")]
-use crate::{mtp, trusted_ui};
+use crate::mtp;
+use crate::{byte_size, file_count, inline_status, trusted_ui};
 
 const TICK: Duration = Duration::from_millis(75);
 const QR_FILE_LIMIT: u64 = 16 * 1024 * 1024;
@@ -50,9 +50,7 @@ enum WifiBlock {
 enum TransferOutcome {
     Wifi(BatchOutcome),
     Legacy(SendOutcome),
-    #[cfg(target_os = "windows")]
     Trusted(BatchOutcome),
-    #[cfg(target_os = "windows")]
     TrustedUnavailable,
     #[cfg(target_os = "windows")]
     Cable(mtp::BatchCopy),
@@ -114,9 +112,7 @@ pub(crate) struct Card {
     cable_mode: Signal<bool>,
     #[cfg(target_os = "windows")]
     cable_target: Signal<Option<mtp::Target>>,
-    #[cfg(target_os = "windows")]
     trusted: trusted_ui::Panel,
-    #[cfg(target_os = "windows")]
     active_trusted_label: Signal<Option<String>>,
     activity: Signal<Activity>,
     status: Signal<String>,
@@ -126,11 +122,7 @@ pub(crate) struct Card {
 }
 
 impl Card {
-    pub(crate) fn new(
-        cx: &mut WindowContext,
-        worker: Worker,
-        #[cfg(target_os = "windows")] trusted: trusted_ui::Panel,
-    ) -> Self {
+    pub(crate) fn new(cx: &mut WindowContext, worker: Worker, trusted: trusted_ui::Panel) -> Self {
         let runtime = &cx.ui.runtime;
         let card = Self {
             files: runtime.signal(Vec::new()),
@@ -141,9 +133,7 @@ impl Card {
             cable_mode: runtime.signal(false),
             #[cfg(target_os = "windows")]
             cable_target: runtime.signal(None),
-            #[cfg(target_os = "windows")]
             trusted,
-            #[cfg(target_os = "windows")]
             active_trusted_label: runtime.signal(None),
             activity: runtime.signal(Activity::Idle),
             status: runtime.signal(String::new()),
@@ -279,7 +269,6 @@ impl Card {
         self.status.set(String::new());
     }
 
-    #[cfg(target_os = "windows")]
     pub(crate) fn can_send_trusted(&self) -> bool {
         !self.busy()
             && !self.over_cable()
@@ -288,7 +277,6 @@ impl Card {
                 .with(|paths| (1..=MAX_FILES).contains(&paths.len()))
     }
 
-    #[cfg(target_os = "windows")]
     pub(crate) fn send_trusted(&self, id: [u8; 32]) -> bool {
         if !self.can_send_trusted() {
             return false;
@@ -471,9 +459,7 @@ impl Card {
         let Ok(rx) = self.worker.spawn("sliploom-send", move |cancel| {
             work(cancel, &worker_progress)
         }) else {
-            let one_time = !cable;
-            #[cfg(target_os = "windows")]
-            let one_time = one_time && self.active_trusted_label.with(Option::is_none);
+            let one_time = !cable && self.active_trusted_label.with(Option::is_none);
             self.fail_transfer(if one_time {
                 "Couldn’t start the sender. Get a new one-time code from the receiver."
             } else {
@@ -489,9 +475,7 @@ impl Card {
                         match outcome {
                             TransferOutcome::Wifi(outcome) => card.finish(batch_message(outcome, false)),
                             TransferOutcome::Legacy(outcome) => card.finish(legacy_message(outcome)),
-                            #[cfg(target_os = "windows")]
                             TransferOutcome::Trusted(outcome) => card.finish(batch_message(outcome, true)),
-                            #[cfg(target_os = "windows")]
                             TransferOutcome::TrustedUnavailable => {
                                 let message = if card.worker.cancel.load(Ordering::Acquire) {
                                     "Send cancelled."
@@ -532,10 +516,7 @@ impl Card {
                                 }
                             }
                             if !cable && progress.connected.load(Ordering::Acquire) {
-                                #[cfg(target_os = "windows")]
                                 let trusted = card.active_trusted_label.with(Option::is_some);
-                                #[cfg(not(target_os = "windows"))]
-                                let trusted = false;
                                 card.update_status(if bytes == 0 && !trusted {
                                     format!("Connected · {} · check the receiver", file_count(total))
                                 } else {
@@ -575,7 +556,6 @@ impl Card {
     fn finish(&self, message: String) {
         self.worker.join();
         self.active_target.set(None);
-        #[cfg(target_os = "windows")]
         self.active_trusted_label.set(None);
         self.status.set(message);
         self.activity.set(Activity::Idle);
@@ -668,7 +648,6 @@ impl Card {
     }
 
     fn wifi_hint(&self) -> Option<String> {
-        #[cfg(target_os = "windows")]
         if let Some(label) = self.active_trusted_label.get() {
             return Some(format!("Destination: {label}"));
         }
@@ -688,7 +667,6 @@ impl Card {
                 if !self.status.with(String::is_empty) {
                     return None;
                 }
-                #[cfg(target_os = "windows")]
                 if self.trusted.available() {
                     return Some(
                         "Use the full code or QR from Receive, or send from Trusted devices."

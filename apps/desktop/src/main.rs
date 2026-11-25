@@ -39,7 +39,6 @@ mod mtp;
 mod send_ui;
 mod settings;
 mod titlebar;
-#[cfg(target_os = "windows")]
 mod trusted_ui;
 
 const APP_NAME: &str = "Sliploom";
@@ -698,8 +697,8 @@ fn receive_screen(
     send_worker: send_ui::Worker,
     saved_folder: &io::Result<Option<PathBuf>>,
     #[cfg(target_os = "windows")] workers: cable_ui::Workers,
-    #[cfg(target_os = "windows")] trust_profile: Option<&trusted_ui::Profile>,
-    #[cfg(target_os = "windows")] trust_workers: trusted_ui::Workers,
+    trust_profile: Option<&trusted_ui::Profile>,
+    trust_workers: trusted_ui::Workers,
 ) {
     cx.window.set_theme(Some(zgx::theme::Appearance::Dark));
     let glass = acrylic::available(cx);
@@ -707,22 +706,18 @@ fn receive_screen(
         .ui
         .runtime
         .signal(saved_folder.as_ref().ok().cloned().flatten());
-    #[cfg(target_os = "windows")]
     let trusted = trusted_ui::Panel::new(cx, trust_profile, trust_workers, folder.clone());
-    let send = send_ui::Card::new(
-        cx,
-        send_worker,
-        #[cfg(target_os = "windows")]
-        trusted.clone(),
-    );
+    let send = send_ui::Card::new(cx, send_worker, trusted.clone());
     let runtime = &cx.ui.runtime;
     let wifi = runtime.signal(!cfg!(target_os = "windows"));
     let sending = runtime.signal(false);
     let history = History::new(cx);
-    #[cfg(target_os = "windows")]
     trusted.watch(cx, history.clone(), sending.clone(), send.clone());
-    #[cfg(target_os = "windows")]
-    let trusted_trigger = trusted.view(sending.clone(), send.clone());
+    let trusted_trigger = if cfg!(any(windows, feature = "unix-trusted")) {
+        trusted.view(sending.clone(), send.clone())
+    } else {
+        div().hidden()
+    };
     let screen = Screen {
         folder,
         default_folder: runtime.signal(None),
@@ -934,12 +929,7 @@ fn receive_screen(
     let themes = cx.ui.theme().clone();
     cx.render(
         backdrop(glass, themes.clone())
-            .child(titlebar::view(
-                cx,
-                #[cfg(target_os = "windows")]
-                trusted_trigger,
-                status,
-            ))
+            .child(titlebar::view(cx, trusted_trigger, status))
             .child(dashboard::view(
                 themes,
                 heading,
@@ -954,9 +944,11 @@ fn receive_screen(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     let workers = cable_ui::Workers::default();
-    #[cfg(target_os = "windows")]
-    let trust_profile = trusted_ui::open();
-    #[cfg(target_os = "windows")]
+    let trust_profile = if cfg!(any(windows, feature = "unix-trusted")) {
+        trusted_ui::open()
+    } else {
+        None
+    };
     let trust_workers = trusted_ui::Workers::default();
     let wifi_worker = WifiWorker::default();
     let send_worker = send_ui::Worker::default();
@@ -980,9 +972,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &saved_folder,
                 #[cfg(target_os = "windows")]
                 workers.clone(),
-                #[cfg(target_os = "windows")]
                 trust_profile.as_ref(),
-                #[cfg(target_os = "windows")]
                 trust_workers.clone(),
             )
         });
@@ -990,7 +980,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     send_worker.shutdown();
     #[cfg(target_os = "windows")]
     workers.shutdown();
-    #[cfg(target_os = "windows")]
     trust_workers.shutdown();
     result
 }

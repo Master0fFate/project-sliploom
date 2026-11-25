@@ -6,6 +6,9 @@ publish = false
 
 [workspace]
 
+[features]
+unix-trusted = []
+
 [dependencies]
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }
 qrcode = { version = "=0.14.1", default-features = false }

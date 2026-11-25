@@ -55,7 +55,7 @@ See [how to verify downloads](docs/RELEASE_PIPELINE.md#verify-downloads). A matc
 
 ## USB on Windows
 
-Windows is the only desktop build with USB transfers and Trusted Devices. Neither is needed for Wi-Fi **Receive once**.
+The v1.0.0 desktop installers only offer USB transfers and Trusted Devices on Windows. Neither is needed for Wi-Fi **Receive once**.
 
 - **Android → Windows (ADB):** Install Android SDK Platform Tools on Windows, connect with a USB data cable, and make sure USB debugging is authorized for that PC. Keep Sliploom open in cable receive mode. On Android, select one image or PDF and choose **Use debug USB (image or PDF)**. Windows asks you to **Accept** or **Decline** before any file content is sent. There is no QR code or automatic Wi-Fi fallback.
 - **Windows → Android (MTP):** Unlock the phone, set its USB mode to **File transfer**, and select **Send → Use cable instead** on Windows. Check the detected phone, then choose and send files. The Wi-Fi batch limits also apply here. Files go to Android’s **Downloads** folder; a name conflict stops the copy rather than overwriting a file. This direction does not require Sliploom on Android, USB debugging, Wi-Fi, or a QR code.
@@ -68,6 +68,8 @@ Open **Trusted devices** on both devices. On Windows, select **Show pairing QR**
 A ready trusted peer can send without a new QR or per-batch approval. Keep Sliploom running, keep Android in the foreground, and make sure the devices can reach each other on the same Wi-Fi. Pair again if an address changes. Forgetting a device revokes trust without deleting received files. Pairing does not change USB permissions, and existing trusted-device state remains usable.
 
 </details>
+
+macOS and Linux Trusted Devices require an experimental source build with `--features unix-trusted`. Choose a save folder before enabling trusted receive. Pair with another current build that recognizes macOS and Linux peers. Trust data on those desktops is stored in files readable only by your OS account; these files are not encrypted by Keychain or Secret Service.
 
 Windows uses the same save folder for cable, Wi-Fi, and trusted receive. If it becomes unusable, choose another folder. Changing the folder does not disable trusted receive; a trusted batch already in progress finishes in the folder it started with.
 
