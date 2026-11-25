@@ -50,7 +50,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libdbus-1-dev libwayland-dev
-          sudo apt-get install -y --no-install-recommends dpkg-dev desktop-file-utils
+          sudo apt-get install -y --no-install-recommends dpkg-dev desktop-file-utils libmtp-dev
+
+      - name: Build pinned macOS MTP libraries
+        if: runner.os == 'macOS'
+        run: |
+          command -v pkg-config >/dev/null || brew install pkgconf
+          prefix="$(cd "$RUNNER_TEMP" && pwd -P)/sliploom-mtp"
+          bash packaging/macos-build-mtp.sh "$prefix"
+          printf 'SLIPLOOM_MTP_PREFIX=%s\n' "$prefix" >> "$GITHUB_ENV"
 
       - name: Install repository-pinned Rust toolchain
         run: rustup toolchain install --no-self-update --profile minimal --component rustfmt,clippy
@@ -77,7 +85,17 @@ jobs:
       - name: Build desktop binary
         env:
           CARGO_PROFILE_RELEASE_DEBUG: '0'
-        run: cargo build --locked --release --manifest-path apps/desktop/Cargo.toml
+        run: |
+          features=()
+          if [[ "$RUNNER_OS" != Windows ]]; then
+            features=(--features unix-trusted,unix-mtp)
+          fi
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            export PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$SLIPLOOM_MTP_PREFIX/lib/pkgconfig"
+            export MACOSX_DEPLOYMENT_TARGET=11.0
+            export RUSTFLAGS='-C link-arg=-Wl,-headerpad_max_install_names'
+          fi
+          cargo build --locked --release --manifest-path apps/desktop/Cargo.toml "${features[@]}"
 
       - name: Package and verify Windows installer
         if: runner.os == 'Windows'

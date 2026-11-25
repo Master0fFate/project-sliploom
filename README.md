@@ -8,7 +8,7 @@ Transfer files directly between devices on the same local network, without an ac
 - Start with **Receive once** on the receiving device. Its short-lived QR code and text code are two ways to share the same invitation. Anyone with it can send one batch without a second approval, so share it only with your sender.
 - A batch can include up to **32 regular files**, **64 MiB per file**, and **256 MiB total**. A file of unknown size counts as 64 MiB. Existing files are not overwritten. If a transfer is interrupted, already saved files remain; check the receiver before retrying an unconfirmed file.
 
-[Android](#android) · [macOS Apple silicon](#macos-apple-silicon) · [Ubuntu 24.04 x64](#ubuntu-2404-x64) · [Windows x64](#windows-x64) · [Downloads](#downloads) · [USB on macOS and Ubuntu](#usb-on-macos-and-ubuntu) · [USB on Windows](#usb-on-windows)
+[Android](#android) · [macOS Apple silicon](#macos-apple-silicon) · [Ubuntu 24.04 x64](#ubuntu-2404-x64) · [Windows x64](#windows-x64) · [Downloads](#downloads) · [USB on macOS and Ubuntu](#usb-on-macos-and-ubuntu) · [USB on Windows](#usb-on-windows) · [Trusted Devices](#trusted-devices)
 
 ### Android
 
@@ -38,7 +38,7 @@ Android requires the same signing key for an in-place upgrade of `org.projectsea
 
 ### What’s been tested
 
-Desktop CI runs a same-host Wi-Fi batch on Windows, macOS, and Ubuntu. It uses the same sender and receiver as the app and checks file contents and receipts. It does not test the desktop UI or transfers between physical devices. The [LAN test notes](docs/TESTING/LAN_PROOF.md) record the physical Android-to-Windows transfer and earlier protocol checks.
+Desktop CI runs a same-host Wi-Fi batch on Windows, macOS, and Ubuntu. It uses the same sender and receiver as the app and checks file contents and receipts. It does not test the desktop UI, USB, or transfers between physical devices. The [LAN test notes](docs/TESTING/LAN_PROOF.md) record the physical Android-to-Windows transfer and earlier protocol checks.
 
 ## Downloads
 
@@ -55,32 +55,29 @@ See [how to verify downloads](docs/RELEASE_PIPELINE.md#verify-downloads). A matc
 
 ## USB on macOS and Ubuntu
 
-These cable modes are available in local source builds, not in the macOS or Ubuntu v1.0.0 installers.
+The v1.1.0 macOS Apple silicon and Ubuntu 24.04 x64 packages include both cable modes. Native macOS and Ubuntu USB transfers have not been validated on hardware.
 
-- **Android → desktop (ADB):** Install Android SDK Platform-Tools and run `adb start-server`. Connect one phone and authorize USB debugging. In Sliploom, select **Use cable instead** and choose an existing save folder. On Android, select one image or PDF and tap **Use debug USB (image or PDF)**, then accept the transfer on the desktop. This direction does not use Wi-Fi.
-- **Desktop → Android (MTP):** Build with `--features unix-mtp` and libmtp 1.1.21 or later available through `pkg-config` (`libmtp-dev` on Ubuntu, `libmtp` on Homebrew). Unlock the phone, set its USB mode to **File transfer**, and select **Send → Use cable instead**. This experimental mode checks the new file’s name and size on the phone, not its contents. If a transfer is unconfirmed, check **Downloads** before retrying.
+- **Android → desktop (ADB):** Install Android SDK Platform Tools and run `adb start-server`. Connect one phone and authorize USB debugging. In Sliploom, select **Use cable instead** and choose an existing save folder. On Android, select one image or PDF and tap **Use debug USB (image or PDF)**, then accept the transfer on the desktop. This direction does not use Wi-Fi.
+- **Desktop → Android (MTP):** Unlock the phone, set its USB mode to **File transfer**, and select **Send → Use cable instead**. This experimental mode checks the new file’s name and size on the phone, not its contents. If a transfer is unconfirmed, check **Downloads** before retrying.
 
 ## USB on Windows
 
-The v1.0.0 desktop installers offer USB transfers and Trusted Devices only on Windows. Neither is needed for Wi-Fi **Receive once**.
+Windows USB support is unchanged in v1.1.0. USB is not needed for Wi-Fi **Receive once**.
 
 - **Android → Windows (ADB):** Install Android SDK Platform Tools on Windows, connect with a USB data cable, and make sure USB debugging is authorized for that PC. Keep Sliploom open in cable receive mode. On Android, select one image or PDF and choose **Use debug USB (image or PDF)**. Windows asks you to **Accept** or **Decline** before any file content is sent. There is no QR code or automatic Wi-Fi fallback.
 - **Windows → Android (MTP):** Unlock the phone, set its USB mode to **File transfer**, and select **Send → Use cable instead** on Windows. Check the detected phone, then choose and send files. The Wi-Fi batch limits also apply here. Files go to Android’s **Downloads** folder; a name conflict stops the copy rather than overwriting a file. This direction does not require Sliploom on Android, USB debugging, Wi-Fi, or a QR code.
 
-<details>
-<summary>Optional Trusted Devices pairing (Android and Windows)</summary>
+Windows uses the same save folder for cable, Wi-Fi, and trusted receive. If it becomes unusable, choose another folder. Changing the folder does not disable trusted receive; a trusted batch already in progress finishes in the folder it started with.
 
-Open **Trusted devices** on both devices. On Windows, select **Show pairing QR**; on Android, select **Scan QR**. Compare the verification codes and confirm only if they match. Turn on **Allow trusted receive** on Windows to accept transfers from paired devices.
+## Trusted Devices
+
+Trusted Devices is included by default in the v1.1.0 Windows x64, macOS Apple silicon, and Ubuntu 24.04 x64 packages; trusted receive is off until you explicitly enable it. On macOS and Ubuntu, choose a save folder first and use a current peer build that recognizes macOS and Linux peers.
+
+Open **Trusted devices** on both devices. On desktop, select **Show pairing QR**; on Android, select **Scan QR**. Compare the verification codes and confirm only if they match. Turn on **Allow trusted receive** on the desktop to accept transfers from paired devices. You do not need to pair for Wi-Fi **Receive once**.
 
 A ready trusted peer can send without a new QR or per-batch approval. Keep Sliploom running, keep Android in the foreground, and make sure the devices can reach each other on the same Wi-Fi. Pair again if an address changes. Forgetting a device revokes trust without deleting received files. Pairing does not change USB permissions, and existing trusted-device state remains usable.
 
-</details>
-
-Windows uses the same save folder for cable, Wi-Fi, and trusted receive. If it becomes unusable, choose another folder. Changing the folder does not disable trusted receive; a trusted batch already in progress finishes in the folder it started with.
-
-## Trusted Devices on macOS and Linux
-
-Trusted Devices on macOS and Linux require an experimental source build with `--features unix-trusted`; this feature is not in the v1.0.0 installers. Choose a save folder before enabling trusted receive. Pair with another current build that recognizes macOS and Linux peers. Trust data is stored in files intended to be private to your OS account; these files are not encrypted by Keychain or Secret Service.
+On macOS and Ubuntu, trust data is stored in files intended to be private to your OS account; these files are not encrypted by Keychain or Secret Service.
 
 ## Build locally
 
@@ -91,7 +88,7 @@ cargo build --locked --manifest-path apps/desktop/Cargo.toml
 cargo run --locked --manifest-path apps/desktop/Cargo.toml
 ```
 
-On macOS and Ubuntu, to build both experimental features after installing libmtp:
+To match the macOS and Ubuntu release features, install `libmtp` and `pkgconf` via Homebrew on macOS or `libmtp-dev` on Ubuntu. Then build with both features (pass the same flags to `cargo run` to launch that configuration):
 
 ```sh
 cargo build --locked --manifest-path apps/desktop/Cargo.toml --features unix-trusted,unix-mtp

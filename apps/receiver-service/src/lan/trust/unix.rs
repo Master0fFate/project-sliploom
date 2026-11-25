@@ -7,13 +7,16 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rustix::{
-    fs::{self, AtFlags, FlockOperation, Mode, OFlags},
+    fs::{self, AtFlags, FlockOperation, Mode, OFlags, RenameFlags},
     io::Errno,
     process::{geteuid, getuid},
 };
 
 use super::{LOCK, MAX_BLOB, Sensitive};
-use crate::{Result, invalid, lan};
+use crate::{
+    Result, invalid,
+    lan::{self, CheckedStream},
+};
 
 pub(super) const IDENTITY: &str = "identity.private";
 pub(super) const PEERS: &str = "peers.private";
@@ -27,6 +30,21 @@ const FILE_FLAGS: OFlags = OFlags::NOFOLLOW
     .union(OFlags::NONBLOCK);
 const DIR_MODE: Mode = Mode::from_bits_truncate(0o700);
 const FILE_MODE: Mode = Mode::from_bits_truncate(0o600);
+
+#[derive(Debug)]
+struct CommittedWriteError(io::Error);
+
+impl std::fmt::Display for CommittedWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "trust record renamed; directory sync failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for CommittedWriteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
 
 pub(in crate::lan::trust) struct Store {
     directory: File,
@@ -80,13 +98,20 @@ impl Store {
             file.write_all(bytes)?;
             file.sync_all()?;
             fs::renameat(&self.directory, &staging, &self.directory, name)?;
-            self.directory.sync_all()?;
             Ok(())
         })();
         if result.is_err() {
             let _ = fs::unlinkat(&self.directory, &staging, AtFlags::empty());
+            return result;
         }
-        result
+        self.directory.sync_all().map_err(CommittedWriteError)?;
+        Ok(())
+    }
+
+    pub(in crate::lan::trust::desktop) fn is_committed_write_error(
+        error: &(dyn std::error::Error + 'static),
+    ) -> bool {
+        error.is::<CommittedWriteError>()
     }
 
     pub(in crate::lan::trust) fn receive_opt_in(&self) -> io::Result<bool> {
@@ -128,13 +153,20 @@ impl Store {
         result
     }
 
-    pub(in crate::lan::trust) fn receive_destination(&self, folder: &Path) -> Option<PathBuf> {
+    pub(in crate::lan::trust) fn open_receive_destination(
+        &self,
+        folder: &Path,
+    ) -> Option<ReceiveDestination> {
         const MIN_AVAILABLE: u64 = 512 * 1024 * 1024;
         let trust = self.directory.metadata().ok()?;
         let directory = private_directory(folder, Some((trust.dev(), trust.ino()))).ok()?;
         let space = fs::fstatvfs(&directory).ok()?;
-        (space.f_bavail.saturating_mul(space.f_frsize) >= MIN_AVAILABLE)
-            .then(|| folder.components().collect())
+        (space.f_bavail.saturating_mul(space.f_frsize) >= MIN_AVAILABLE).then(|| {
+            ReceiveDestination {
+                directory,
+                display_path: folder.components().collect(),
+            }
+        })
     }
 
     fn open_record(&self, name: &str) -> io::Result<Option<File>> {
@@ -150,6 +182,94 @@ impl Store {
         };
         check_file(&file)?;
         Ok(Some(file))
+    }
+}
+
+pub(in crate::lan) struct ReceiveDestination {
+    directory: File,
+    display_path: PathBuf,
+}
+
+impl ReceiveDestination {
+    pub(in crate::lan::trust) fn into_display_path(self) -> PathBuf {
+        self.display_path
+    }
+
+    pub(in crate::lan) fn stage(&self) -> io::Result<ReceiveStaging<'_>> {
+        check_directory(&self.directory, geteuid().as_raw(), true, None)?;
+        let suffix = URL_SAFE_NO_PAD.encode(lan::random::<16>()?);
+        let name = format!(".receive-{suffix}");
+        let file = File::from(fs::openat(
+            &self.directory,
+            &name,
+            FILE_FLAGS | OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL,
+            FILE_MODE,
+        )?);
+        let staging = ReceiveStaging {
+            destination: self,
+            file,
+            name: Some(name),
+        };
+        fs::fchmod(&staging.file, FILE_MODE)?;
+        check_file(&staging.file)?;
+        Ok(staging)
+    }
+}
+
+pub(in crate::lan) struct ReceiveStaging<'a> {
+    destination: &'a ReceiveDestination,
+    file: File,
+    name: Option<String>,
+}
+
+impl ReceiveStaging<'_> {
+    pub(in crate::lan) fn file(&mut self) -> &mut File {
+        &mut self.file
+    }
+
+    pub(in crate::lan) fn publish(
+        mut self,
+        stream: &impl CheckedStream,
+        stem: &str,
+        extension: Option<&str>,
+        publish_gate: &std::sync::Mutex<()>,
+    ) -> io::Result<PathBuf> {
+        let directory = &self.destination.directory;
+        let staging = self.name.as_deref().expect("unpublished staging file");
+        for name in lan::publish_names(stem, extension) {
+            let _gate = publish_gate.lock().expect("publish lock poisoned");
+            check_directory(directory, geteuid().as_raw(), true, None)?;
+            check_file(&self.file)?;
+            if !self.matches_entry(staging)? {
+                return Err(invalid("receive staging entry changed"));
+            }
+            stream.check()?;
+            match fs::renameat_with(directory, staging, directory, &name, RenameFlags::NOREPLACE) {
+                Ok(()) => {
+                    self.name = None;
+                    return Ok(self.destination.display_path.join(name));
+                }
+                Err(Errno::EXIST) => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(lan::publish_exhausted())
+    }
+
+    fn matches_entry(&self, name: &str) -> io::Result<bool> {
+        let entry = fs::statat(&self.destination.directory, name, AtFlags::SYMLINK_NOFOLLOW)?;
+        let opened = fs::fstat(&self.file)?;
+        Ok(entry.st_dev == opened.st_dev && entry.st_ino == opened.st_ino)
+    }
+}
+
+impl Drop for ReceiveStaging<'_> {
+    fn drop(&mut self) {
+        if let Some(name) = &self.name
+            && self.matches_entry(name).unwrap_or(false)
+        {
+            let _ = fs::unlinkat(&self.destination.directory, name, AtFlags::empty());
+        }
     }
 }
 

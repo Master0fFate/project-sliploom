@@ -20,6 +20,8 @@ mod platform;
 
 pub(super) use platform::Store;
 use platform::{IDENTITY, PEERS};
+#[cfg(unix)]
+pub(in crate::lan) use platform::{ReceiveDestination, ReceiveStaging};
 
 const ID_MAGIC: &[u8] = b"SEAM5 identity";
 const PEER_MAGIC: &[u8] = b"SEAM5 peers";

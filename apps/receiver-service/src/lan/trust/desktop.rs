@@ -22,6 +22,10 @@ use crate::{
     lan::{self, Cancellation, CheckedStream, Receipt, ReceiveSession, sender::SendInvite},
 };
 use storage::Store;
+#[cfg(unix)]
+pub(in crate::lan) use storage::{ReceiveDestination, ReceiveStaging};
+#[cfg(windows)]
+type ReceiveDestination = PathBuf;
 
 #[path = "storage.rs"]
 mod storage;
@@ -179,7 +183,10 @@ impl Trust {
 
     #[cfg(unix)]
     pub fn receive_destination(&self, folder: &Path) -> Option<PathBuf> {
-        self.0.store.receive_destination(folder)
+        self.0
+            .store
+            .open_receive_destination(folder)
+            .map(ReceiveDestination::into_display_path)
     }
 
     pub fn arm_pair(&self) -> Result<String> {
@@ -221,13 +228,18 @@ impl Trust {
             .ok_or_else(|| invalid("paired device not found"))?;
         let mut peers = state.peers.clone();
         let removed = peers.remove(index);
-        self.0.store.save_peers(&self.0.id, &peers)?;
+        let result = match self.0.store.save_peers(&self.0.id, &peers) {
+            Ok(()) => Ok(()),
+            #[cfg(unix)]
+            Err(error) if Store::is_committed_write_error(error.as_ref()) => Err(error),
+            Err(error) => return Err(error),
+        };
         state.peers = peers;
         removed.cancelled.store(true, Ordering::Release);
         if let Some(grant) = state.grant.as_ref().filter(|grant| grant.id == id) {
             grant.cancelled.store(true, Ordering::Release);
         }
-        Ok(())
+        result
     }
 
     pub fn serve<D: AsRef<Path> + Send>(
@@ -545,13 +557,16 @@ impl Trust {
         destination: &impl Fn() -> io::Result<D>,
         id: [u8; 32],
         remote: Ipv4Addr,
-    ) -> Option<(D, PathBuf)> {
+    ) -> Option<(D, ReceiveDestination)> {
         if !self.observe_peer(id, remote) || self.state().grant.is_some() {
             return None;
         }
         let folder = destination().ok()?;
-        let path = self.0.store.receive_destination(folder.as_ref())?;
-        Some((folder, path))
+        #[cfg(windows)]
+        let target = self.0.store.receive_destination(folder.as_ref())?;
+        #[cfg(unix)]
+        let target = self.0.store.open_receive_destination(folder.as_ref())?;
+        Some((folder, target))
     }
 
     fn prepare_receive<D: AsRef<Path>>(
@@ -562,8 +577,16 @@ impl Trust {
         remote: Ipv4Addr,
         cancel: &AtomicBool,
     ) -> Option<(ReceiveSession, GrantLease<'_>, D)> {
-        let (folder, path) = self.available_destination(destination, id, remote)?;
-        let session = ReceiveSession::bind_batch(address, &path).ok()?;
+        let (folder, target) = self.available_destination(destination, id, remote)?;
+        #[cfg(windows)]
+        let session = ReceiveSession::bind_batch(address, &target).ok()?;
+        #[cfg(unix)]
+        let session = ReceiveSession::bind_destination(
+            address,
+            lan::batch::Destination::Trusted(target),
+            lan::WifiVersion::Batch,
+        )
+        .ok()?;
         let mut state = self.state();
         if state.grant.is_some() || state.find(id).is_none() || cancel.load(Ordering::Acquire) {
             return None;

@@ -10,19 +10,35 @@ Desktop candidates and public release assets use the same stable filenames, with
 | macOS Apple Silicon | `sliploom-macos-arm64.dmg` | Open the DMG and drag `Sliploom.app` into Applications. Remove the app to uninstall. |
 | Ubuntu 24.04 x64 | `sliploom-linux-amd64.deb` | Run `sudo apt install ./sliploom-linux-amd64.deb`. Remove with `sudo apt remove sliploom`. Use a graphical desktop session with working graphics drivers and a desktop portal backend for file pickers. |
 
-The Windows installer is unsigned. The macOS DMG has no Developer ID signature or notarization. Either may trigger OS security prompts. The `.deb` is not distributed through an authenticated APT repository. A SHA-256 match verifies downloaded bytes against the sidecar, not publisher identity. Packaging checks do not verify app launch or transfers.
+The Windows installer is unsigned. The macOS DMG has no Developer ID signature or notarization. Either may trigger OS security prompts. The `.deb` is not distributed through an authenticated APT repository. A SHA-256 match verifies downloaded bytes against the sidecar, not publisher identity. macOS and Ubuntu packaging run the packaged executable's `--version` command to check shared-library loading. This does not exercise the desktop UI or physical transfers. The separate desktop CI smoke check sends a Wi-Fi batch on the same host; it does not test USB hardware.
 
-CI installs NSIS using [Chocolatey `nsis` 3.12.0](https://community.chocolatey.org/packages/nsis/3.12.0). The installer itself does not download anything. Ubuntu builds with the same library headers as `build.yml`. `dpkg-shlibdeps` resolves linked libraries on Ubuntu 24.04, the package also declares desktop libraries loaded at runtime, and APT simulates installing the result to check dependency resolution. Roboto is embedded in the executable; each package carries `Roboto-OFL.txt`.
+The v1.1.0 packages include Trusted Devices on all three desktop targets, but trusted receive requires turning on **Allow trusted receive**. Android-to-desktop USB receive needs Android SDK Platform Tools and authorized USB debugging. Desktop-to-Android MTP send needs the phone unlocked and in **File transfer** mode. Unix MTP is experimental.
 
-To reproduce on a matching native machine with the workflow dependencies installed, run `cargo build --locked --release --manifest-path apps/desktop/Cargo.toml` from the repository root. Run the corresponding packaging command with your numeric desktop crate version and output path (examples use `1.0.0`):
+CI installs NSIS using [Chocolatey `nsis` 3.12.0](https://community.chocolatey.org/packages/nsis/3.12.0). The installer itself does not download anything. macOS builds pinned libusb and libmtp from source using Xcode Command Line Tools and `pkg-config`. The DMG bundles the libraries, upstream source archives with their licenses, and the build script; recipients do not need Homebrew. Ubuntu builds with `libmtp-dev`. Ubuntu packaging requires `dpkg-shlibdeps` to identify `libmtp9t64`, checks that it is installed and that the packaged executable resolves its linked libraries, and adds `libmtp-runtime` for the distro's MTP helper. APT simulates installing the `.deb` without recommendations. Roboto is embedded in the executable; each package carries `Roboto-OFL.txt`.
+
+To reproduce on a matching native machine with the workflow dependencies installed, build from the repository root and pass the numeric desktop crate version and output path to the matching script (examples use `1.1.0`). On Windows, keep the default features:
 
 ```powershell
-./packaging/windows.ps1 1.0.0 ./sliploom-windows-x64.exe
+cargo build --locked --release --manifest-path apps/desktop/Cargo.toml
+./packaging/windows.ps1 1.1.0 ./sliploom-windows-x64.exe
 ```
 
+On macOS, start with a fresh build prefix and keep it until packaging finishes:
+
 ```bash
-bash packaging/macos.sh 1.0.0 ./sliploom-macos-arm64.dmg
-bash packaging/linux.sh 1.0.0 ./sliploom-linux-amd64.deb
+export SLIPLOOM_MTP_PREFIX="$(cd "${TMPDIR:-/tmp}" && pwd -P)/sliploom-mtp-1.1.0"
+bash packaging/macos-build-mtp.sh "$SLIPLOOM_MTP_PREFIX"
+PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$SLIPLOOM_MTP_PREFIX/lib/pkgconfig" \
+  MACOSX_DEPLOYMENT_TARGET=11.0 RUSTFLAGS='-C link-arg=-Wl,-headerpad_max_install_names' \
+  cargo build --locked --release --manifest-path apps/desktop/Cargo.toml --features unix-trusted,unix-mtp
+bash packaging/macos.sh 1.1.0 ./sliploom-macos-arm64.dmg
+```
+
+On Ubuntu, enable both Unix features against the distribution libraries:
+
+```bash
+cargo build --locked --release --manifest-path apps/desktop/Cargo.toml --features unix-trusted,unix-mtp
+bash packaging/linux.sh 1.1.0 ./sliploom-linux-amd64.deb
 ```
 
 Run the Windows command from PowerShell 7 in a disposable user profile with no existing Sliploom install. It runs the new installer and uninstaller silently to verify both.

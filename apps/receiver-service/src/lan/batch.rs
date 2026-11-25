@@ -1,6 +1,6 @@
 use std::{
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -13,6 +13,9 @@ use super::{
     check_directory, filename, frame_header, publish_file, read_frame, write_frame,
 };
 use crate::{MAX_BYTES, Result, invalid};
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use super::trust::{ReceiveDestination, ReceiveStaging};
 
 pub const MAX_FILES: usize = 32;
 pub const MAX_BATCH_BYTES: u64 = 256 * 1024 * 1024;
@@ -51,9 +54,65 @@ pub enum BatchStatus {
     Unsupported,
 }
 
+pub(super) enum Destination {
+    Path(PathBuf),
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    Trusted(ReceiveDestination),
+}
+
+impl Destination {
+    fn stage(&self) -> io::Result<Staging<'_>> {
+        match self {
+            Self::Path(path) => {
+                check_directory(path)?;
+                Ok(Staging::Path(path, NamedTempFile::new_in(path)?))
+            }
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            Self::Trusted(directory) => Ok(Staging::Trusted(directory.stage()?)),
+        }
+    }
+}
+
+enum Staging<'a> {
+    Path(&'a Path, NamedTempFile),
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    Trusted(ReceiveStaging<'a>),
+}
+
+impl Staging<'_> {
+    fn file(&mut self) -> &mut std::fs::File {
+        match self {
+            Self::Path(_, staging) => staging.as_file_mut(),
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            Self::Trusted(staging) => staging.file(),
+        }
+    }
+
+    fn publish(
+        self,
+        stream: &impl CheckedStream,
+        stem: &str,
+        extension: Option<&str>,
+        publish_gate: Option<&Mutex<()>>,
+    ) -> io::Result<PathBuf> {
+        match self {
+            Self::Path(path, staging) => {
+                publish_file(stream, path, staging, stem, extension, publish_gate)
+            }
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            Self::Trusted(staging) => staging.publish(
+                stream,
+                stem,
+                extension,
+                publish_gate.ok_or_else(|| invalid("trusted receive requires a publish gate"))?,
+            ),
+        }
+    }
+}
+
 pub(super) fn receive(
     stream: &mut TlsStream<'_>,
-    folder: &Path,
+    folder: &Destination,
     approve: impl FnOnce(BatchOffer) -> bool,
     mut saved: impl FnMut(Receipt),
     mut progress: impl FnMut(u64),
@@ -128,12 +187,12 @@ fn read_offer(stream: &mut impl CheckedStream) -> io::Result<(BatchOffer, Vec<Op
 
 fn receive_item(
     stream: &mut impl CheckedStream,
-    folder: &Path,
+    folder: &Destination,
     index: u16,
     declared: Option<u64>,
     publish_gate: Option<&Mutex<()>>,
     mut progress: impl FnMut(u64),
-) -> Result<(std::path::PathBuf, u64, [u8; END_LEN])> {
+) -> Result<(PathBuf, u64, [u8; END_LEN])> {
     let (kind, length) = frame_header(stream)?;
     if kind != NAME || length as usize > MAX_NAME_BYTES {
         return Err(invalid("expected batch NAME frame").into());
@@ -146,8 +205,7 @@ fn receive_item(
     let limit = declared.unwrap_or(MAX_BYTES);
 
     stream.check()?;
-    check_directory(folder)?;
-    let mut staging = NamedTempFile::new_in(folder)?;
+    let mut staging = folder.stage()?;
     let mut chunk = [0; MAX_CHUNK];
     let mut bytes = 0_u64;
     let mut digest = Sha256::new();
@@ -161,7 +219,7 @@ fn receive_item(
                 let data = &mut chunk[..count as usize];
                 stream.read_exact(data)?;
                 stream.check()?;
-                staging.write_all(data)?;
+                staging.file().write_all(data)?;
                 digest.update(data);
                 bytes = total;
                 progress(bytes);
@@ -180,8 +238,8 @@ fn receive_item(
         }
     };
     stream.check()?;
-    staging.as_file().sync_all()?;
-    let path = publish_file(stream, folder, staging, stem, extension, publish_gate)?;
+    staging.file().sync_all()?;
+    let path = staging.publish(stream, stem, extension, publish_gate)?;
     Ok((path, bytes, end))
 }
 

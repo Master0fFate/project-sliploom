@@ -16,6 +16,8 @@ pub struct PairPrompt {
 mod desktop;
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub use desktop::Trust;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(super) use desktop::{ReceiveDestination, ReceiveStaging};
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod unsupported {

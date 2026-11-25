@@ -62,7 +62,7 @@ impl WifiVersion {
 
 pub struct ReceiveSession {
     listener: TcpListener,
-    folder: PathBuf,
+    folder: batch::Destination,
     invitation: String,
     token: [u8; 32],
     tls: Arc<ServerConfig>,
@@ -86,11 +86,30 @@ impl ReceiveSession {
     }
 
     fn bind_version(address: Ipv4Addr, folder: &Path, version: WifiVersion) -> Result<Self> {
+        Self::bind_destination(
+            address,
+            batch::Destination::Path(folder.to_path_buf()),
+            version,
+        )
+    }
+
+    fn bind_destination(
+        address: Ipv4Addr,
+        folder: batch::Destination,
+        version: WifiVersion,
+    ) -> Result<Self> {
         if !address.is_private() {
             return Err(invalid("an RFC1918 IPv4 address is required").into());
         }
-        let folder = destination(folder)?;
-
+        let folder = match folder {
+            batch::Destination::Path(path) => batch::Destination::Path(destination(&path)?),
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            trusted @ batch::Destination::Trusted(_) if version == WifiVersion::Batch => trusted,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            batch::Destination::Trusted(_) => {
+                return Err(invalid("trusted receive requires batch mode").into());
+            }
+        };
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
         let mut params = CertificateParams::new(vec![address.to_string()])?;
         let now = OffsetDateTime::now_utc();
@@ -156,7 +175,13 @@ impl ReceiveSession {
         };
         let (mut stream, folder) = self.start(cancelled, WifiVersion::Legacy, on_authenticated)?;
         let offer = read_offer(&mut stream)?;
-        receive_file(&mut stream, &folder, offer, progress)
+        match folder {
+            batch::Destination::Path(folder) => receive_file(&mut stream, &folder, offer, progress),
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            batch::Destination::Trusted(_) => {
+                Err(invalid("expected a LAN receive directory").into())
+            }
+        }
     }
 
     pub fn receive_batch(
@@ -198,7 +223,7 @@ impl ReceiveSession {
         cancelled: Cancellation<'a>,
         version: WifiVersion,
         on_authenticated: impl FnOnce(),
-    ) -> Result<(TlsStream<'a>, PathBuf)> {
+    ) -> Result<(TlsStream<'a>, batch::Destination)> {
         if self.version != version {
             return Err(invalid("invitation version does not match receiver mode").into());
         }
@@ -529,16 +554,7 @@ fn publish_file(
     extension: Option<&str>,
     publish_gate: Option<&Mutex<()>>,
 ) -> io::Result<PathBuf> {
-    for attempt in 1..=MAX_PUBLISH_ATTEMPTS {
-        let mut name = if attempt == 1 {
-            stem.to_owned()
-        } else {
-            format!("{stem} ({attempt})")
-        };
-        if let Some(extension) = extension {
-            name.push('.');
-            name.push_str(extension);
-        }
+    for name in publish_names(stem, extension) {
         let path = folder.join(name);
         check_directory(folder)?;
         let _gate = publish_gate.map(|gate| gate.lock().expect("publish lock poisoned"));
@@ -551,8 +567,30 @@ fn publish_file(
             Err(error) => return Err(error.error),
         }
     }
-    Err(io::Error::new(
+    Err(publish_exhausted())
+}
+
+fn publish_names<'a>(
+    stem: &'a str,
+    extension: Option<&'a str>,
+) -> impl Iterator<Item = String> + 'a {
+    (1..=MAX_PUBLISH_ATTEMPTS).map(move |attempt| {
+        let mut name = if attempt == 1 {
+            stem.to_owned()
+        } else {
+            format!("{stem} ({attempt})")
+        };
+        if let Some(extension) = extension {
+            name.push('.');
+            name.push_str(extension);
+        }
+        name
+    })
+}
+
+fn publish_exhausted() -> io::Error {
+    io::Error::new(
         io::ErrorKind::AlreadyExists,
         "receive filename attempts exhausted",
-    ))
+    )
 }

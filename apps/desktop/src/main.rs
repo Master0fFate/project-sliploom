@@ -919,6 +919,10 @@ fn receive_screen(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
+        println!("Sliploom {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let workers = cable_ui::Workers::default();
     let trust_profile = if TRUSTED_DEVICES {
         trusted_ui::open()
