@@ -1,10 +1,18 @@
 [package]
 name = "sliploom"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 publish = false
 
 [workspace]
+
+[features]
+unix-mtp = ["dep:cc", "dep:pkg-config"]
+unix-trusted = []
+
+[build-dependencies]
+cc = { version = "=1.11.3", optional = true }
+pkg-config = { version = "=0.3.34", optional = true }
 
 [dependencies]
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }

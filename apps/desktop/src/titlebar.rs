@@ -8,11 +8,7 @@ use crate::material::wordmark;
 pub(crate) const HEIGHT: f32 = 36.;
 const INK: Color = Color(214, 214, 214, 255);
 
-pub(crate) fn view(
-    cx: &WindowContext,
-    #[cfg(target_os = "windows")] trusted: View,
-    status: View,
-) -> View {
+pub(crate) fn view(cx: &WindowContext, trusted: View, status: View) -> View {
     let minimize = cx.window.clone();
     let close = cx.window.clone();
 
@@ -32,9 +28,8 @@ pub(crate) fn view(
                 .window_drag()
                 .child(wordmark()),
         );
-    #[cfg(target_os = "windows")]
-    let bar = bar.child(trusted);
-    bar.child(status)
+    bar.child(trusted)
+        .child(status)
         .child(
             control(Glyph::Minimize, "Minimize")
                 .on_click(move || minimize.set_minimized(true))

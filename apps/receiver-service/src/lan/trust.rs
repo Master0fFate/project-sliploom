@@ -12,12 +12,14 @@ pub struct PairPrompt {
     pub label: String,
 }
 
-#[cfg(windows)]
-mod windows;
-#[cfg(windows)]
-pub use windows::Trust;
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+mod desktop;
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+pub use desktop::Trust;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(super) use desktop::{ReceiveDestination, ReceiveStaging};
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod unsupported {
     use std::{io, net::Ipv4Addr, path::Path, sync::atomic::AtomicBool};
 
@@ -87,5 +89,5 @@ mod unsupported {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub use unsupported::Trust;

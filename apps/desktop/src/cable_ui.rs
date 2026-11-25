@@ -20,6 +20,8 @@ use crate::history::History;
 use crate::material::{
     headline, metadata, primary_action, quiet_action, receive_actions, receive_primary,
 };
+#[cfg(unix)]
+use crate::settings;
 use crate::{destination_label, inline_status, pick_destination};
 
 const TICK: Duration = Duration::from_millis(100);
@@ -63,6 +65,7 @@ impl ReceiptOutcome {
 
 enum Event {
     Status(String),
+    #[cfg(windows)]
     DefaultFolder(PathBuf),
     Busy(bool),
     Prompt(Prompt),
@@ -139,7 +142,7 @@ impl Cable {
     ) -> Self {
         let runtime = &cx.ui.runtime;
         let cable = Self {
-            enabled: runtime.signal(true),
+            enabled: runtime.signal(cfg!(windows)),
             status: runtime.signal(String::new()),
             folder,
             default_folder,
@@ -213,6 +216,12 @@ impl Cable {
             return;
         }
         self.retry.set(false);
+        #[cfg(unix)]
+        if self.folder.with(Option::is_none) {
+            self.status
+                .set("Choose an existing save folder to receive by cable.".into());
+            return;
+        }
         self.status.set("Preparing cable receive…".into());
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -290,6 +299,7 @@ impl Cable {
                     self.prompt.set(None);
                     self.status.set(message);
                 }
+                #[cfg(windows)]
                 Ok(Event::DefaultFolder(path)) => {
                     self.default_folder.set(Some(path));
                 }
@@ -378,8 +388,6 @@ impl Cable {
     pub(crate) fn view(&self) -> View {
         let prompt = self.prompt.clone();
         let ui = self.clone();
-        let retry = self.retry.clone();
-
         switch(
             move || prompt.get(),
             move |prompt, _| {
@@ -388,60 +396,92 @@ impl Cable {
                         .prompt_view(prompt)
                         .child(inline_status(ui.folder_warning.clone()));
                 }
-                let actions = ui.clone();
-                let chooser = ui.clone();
-                let retry = retry.clone();
-                column()
+                #[cfg(windows)]
+                let actions = ui.actions();
+                #[cfg(unix)]
+                let actions = {
+                    let folder = ui.folder.clone();
+                    let ui = ui.clone();
+                    switch(
+                        move || folder.with(Option::is_none),
+                        move |empty, _| {
+                            if !empty {
+                                return ui.actions();
+                            }
+                            let ui = ui.clone();
+                            row().items_center().child(
+                                primary_action("Choose save folder")
+                                    .w(184.)
+                                    .disabled_when(ui.switch_blocked())
+                                    .on_click(move || ui.choose()),
+                            )
+                        },
+                    )
+                    .display_contents()
+                };
+                let controls = column()
                     .gap(8.)
-                    .child(receive_actions(
-                        switch(
-                            move || retry.get(),
-                            move |retry, _| {
-                                let ui = actions.clone();
-                                if retry {
-                                    receive_primary("Retry cable")
-                                        .disabled_when(ui.switch_blocked())
-                                        .on_click(move || ui.start())
-                                } else {
-                                    let available = ui.clone();
-                                    receive_primary("Open folder")
-                                        .disabled_when(move || {
-                                            (available.switch_blocked())()
-                                                || (available.folder.get().is_none()
-                                                    && available.default_folder.get().is_none())
-                                        })
-                                        .on_click(move || {
-                                            let selected = ui.folder.get();
-                                            let expected = selected
-                                                .clone()
-                                                .or_else(|| ui.default_folder.get());
-                                            let _ = thread::Builder::new()
-                                                .name("sliploom-open-folder".into())
-                                                .spawn(move || {
-                                                    if let Ok(folder) =
-                                                        open_destination(selected.as_deref(), false)
-                                                        && expected.as_ref() == Some(&folder.path)
-                                                    {
-                                                        folder.explore();
-                                                    }
-                                                });
-                                        })
-                                }
-                            },
-                        )
-                        .display_contents(),
-                        quiet_action(text("Choose save folder"))
-                            .disabled_when(ui.switch_blocked())
-                            .on_click(move || chooser.choose()),
-                    ))
+                    .child(actions)
                     .child(destination_label(
                         ui.folder.clone(),
                         ui.default_folder.clone(),
                     ))
-                    .child(inline_status(ui.folder_warning.clone()))
+                    .child(inline_status(ui.folder_warning.clone()));
+                #[cfg(unix)]
+                let controls = controls
+                    .child(inline_status(ui.status.clone()))
+                    .child(inline_status(ui.folder_error.clone()));
+                controls
             },
         )
         .display_contents()
+    }
+
+    fn actions(&self) -> View {
+        let retry = self.retry.clone();
+        let actions = self.clone();
+        let chooser = self.clone();
+        receive_actions(
+            switch(
+                move || retry.get(),
+                move |retry, _| {
+                    let ui = actions.clone();
+                    if retry {
+                        receive_primary("Retry cable")
+                            .disabled_when(ui.switch_blocked())
+                            .on_click(move || ui.start())
+                    } else {
+                        let available = ui.clone();
+                        receive_primary("Open folder")
+                            .disabled_when(move || {
+                                (available.switch_blocked())()
+                                    || (available.folder.get().is_none()
+                                        && available.default_folder.get().is_none())
+                            })
+                            .on_click(move || ui.open_folder())
+                    }
+                },
+            )
+            .display_contents(),
+            quiet_action(text("Choose save folder"))
+                .disabled_when(self.switch_blocked())
+                .on_click(move || chooser.choose()),
+        )
+    }
+
+    fn open_folder(&self) {
+        let selected = self.folder.get();
+        #[cfg(windows)]
+        let expected = selected.clone().or_else(|| self.default_folder.get());
+        let _ = thread::Builder::new()
+            .name("sliploom-open-folder".into())
+            .spawn(move || {
+                explore_destination(
+                    selected.as_deref(),
+                    #[cfg(windows)]
+                    expected.as_deref(),
+                );
+            });
     }
 
     fn prompt_view(&self, prompt: Prompt) -> View {
@@ -482,8 +522,40 @@ fn pause(cancel: &AtomicBool, duration: Duration) {
     }
 }
 
+#[cfg(windows)]
 pub(crate) use private_folder::Folder;
 
+#[cfg(windows)]
+fn explore_destination(selected: Option<&Path>, expected: Option<&Path>) {
+    if let Ok(folder) = open_destination(selected, false)
+        && expected == Some(folder.path.as_path())
+    {
+        folder.explore();
+    }
+}
+
+#[cfg(unix)]
+fn explore_destination(selected: Option<&Path>) {
+    use std::process::{Command, Stdio};
+
+    let Some(folder) = selected.and_then(|path| settings::validate(path.to_owned()).ok()) else {
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    let tool = "/usr/bin/open";
+    #[cfg(target_os = "linux")]
+    let tool = "xdg-open";
+    let mut directory = folder.into_os_string();
+    directory.push("/");
+    let _ = Command::new(tool)
+        .arg(directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(windows)]
 pub(crate) fn open_destination(
     selected: Option<&Path>,
     create_default: bool,
@@ -494,10 +566,12 @@ pub(crate) fn open_destination(
     }
 }
 
+#[cfg(windows)]
 pub(crate) fn open_settings_directory(create: bool) -> io::Result<Folder> {
     private_folder::open(private_folder::SETTINGS_DIRECTORY, create)
 }
 
+#[cfg(windows)]
 pub(crate) fn open_trust_directory(
     local: &Path,
     has_legacy_state: impl FnOnce(&Path) -> io::Result<bool>,
@@ -506,6 +580,7 @@ pub(crate) fn open_trust_directory(
 }
 
 fn run(cancel: &AtomicBool, phase: &AtomicU8, tx: &Sender<Event>, selected: Option<&Path>) {
+    #[cfg(windows)]
     let Ok(folder) = open_destination(selected, true) else {
         status(
             tx,
@@ -517,9 +592,12 @@ fn run(cancel: &AtomicBool, phase: &AtomicU8, tx: &Sender<Event>, selected: Opti
         );
         return;
     };
+    #[cfg(windows)]
     if selected.is_none() {
         let _ = tx.send(Event::DefaultFolder(folder.path.clone()));
     }
+    #[cfg(windows)]
+    let destination = folder.path.as_path();
     let retry_delays = [0, 1, 2, 4, 8, 12, 16];
     let mut failures = 0;
     while let Some(&delay) = retry_delays.get(failures) {
@@ -527,14 +605,54 @@ fn run(cancel: &AtomicBool, phase: &AtomicU8, tx: &Sender<Event>, selected: Opti
         if stopped(cancel) {
             return;
         }
-        let Ok(receiver) = CableReceiver::bind(&folder.path) else {
+        #[cfg(unix)]
+        let Some(destination) = selected.and_then(|path| settings::validate(path.to_owned()).ok())
+        else {
+            status(tx, "Can’t use this save folder. Choose another folder.");
+            return;
+        };
+        #[cfg(unix)]
+        let destination = destination.as_path();
+        let Ok(receiver) = CableReceiver::bind(destination) else {
             status(tx, "Couldn’t start cable receive in the save folder.");
             return;
         };
-        let Ok(bridge) = AdbBridge::open(receiver.port()) else {
-            status(tx, "Waiting for an authorized USB connection…");
-            failures += 1;
-            continue;
+        let bridge = match AdbBridge::open(receiver.port()) {
+            Ok(bridge) => bridge,
+            Err(_error) => {
+                #[cfg(windows)]
+                status(tx, "Waiting for an authorized USB connection…");
+                #[cfg(unix)]
+                match _error.kind() {
+                    io::ErrorKind::NotFound => {
+                        status(
+                            tx,
+                            "Install Android SDK Platform-Tools, then choose Retry cable.",
+                        );
+                        return;
+                    }
+                    io::ErrorKind::ConnectionRefused | io::ErrorKind::Unsupported => {
+                        status(
+                            tx,
+                            "Start a compatible local ADB server with adb start-server, then retry.",
+                        );
+                        return;
+                    }
+                    io::ErrorKind::AlreadyExists => {
+                        status(
+                            tx,
+                            "The ADB cable route is already in use. Close the other receiver or reconnect the phone, then retry.",
+                        );
+                        return;
+                    }
+                    _ => status(
+                        tx,
+                        "Connect one phone by USB and authorize USB debugging on the phone.",
+                    ),
+                }
+                failures += 1;
+                continue;
+            }
         };
         if stopped(cancel) {
             return;
@@ -664,6 +782,7 @@ fn approve(
     }
 }
 
+#[cfg(windows)]
 mod private_folder {
     use std::ffi::{OsStr, OsString, c_void};
     use std::fs::{File, OpenOptions};

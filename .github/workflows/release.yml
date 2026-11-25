@@ -7,7 +7,7 @@ name: Publish Sliploom release
         description: Release version (x.y.z, without v)
         type: string
         required: true
-        default: '1.0.0'
+        default: '1.1.0'
 
 permissions:
   contents: read
@@ -129,7 +129,13 @@ jobs:
 
           Sliploom sends and receives files over the same Wi-Fi network on Android 10 or later, Windows x64, macOS Apple silicon, and Ubuntu 24.04 x64. Both devices need Sliploom. Use Receive once on the receiving device and share its QR or one-time code with the sender.
 
-          USB and desktop Trusted Devices are separate features. This version offers both on Windows; neither is needed to send or receive over Wi-Fi.
+          ### USB and Trusted Devices
+
+          v1.1.0 includes USB and Trusted Devices on Windows x64, macOS Apple silicon, and Ubuntu 24.04 x64. Android-to-desktop USB receive requires Android SDK Platform Tools and authorized USB debugging. For desktop-to-Android MTP send, unlock the phone and select File transfer mode. Unix MTP is experimental.
+
+          Trusted Devices is available in the desktop packages by default, but receiving from paired devices requires explicitly enabling Allow trusted receive. Neither USB nor Trusted Devices is needed for Receive once. Desktop CI checks Wi-Fi transfers on the same host, not on physical devices or over USB.
+
+          The Android APK uses versionCode 9.
 
           The Windows installer is not Authenticode signed. The macOS app has no Developer ID signature and is not notarized. Windows SmartScreen or macOS Gatekeeper may warn or block installation. The SHA-256 files verify the downloaded bytes, not the publisher's identity.
           NOTES

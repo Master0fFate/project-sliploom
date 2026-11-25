@@ -27,7 +27,12 @@ EOF
 shlibs=$(cd "$work" && dpkg-shlibdeps -O -e"$stage/usr/bin/sliploom")
 [[ "$shlibs" == shlibs:Depends=?* ]]
 depends=${shlibs#shlibs:Depends=}
-for dependency in libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-cursor0 \
+if [[ ! ", $depends," =~ ,[[:space:]]*libmtp9t64([[:space:]]|,) ]]; then
+  printf 'dpkg-shlibdeps did not detect the Ubuntu 24.04 MTP library: %s\n' "$depends" >&2
+  exit 1
+fi
+test "$(dpkg-query -W -f='${Status}' libmtp9t64)" = 'install ok installed'
+for dependency in libmtp-runtime libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-cursor0 \
   libx11-6 libx11-xcb1 libxcursor1 libxi6 libxrandr2 libegl1 libgl1 libvulkan1 xdg-utils; do
   if [[ ! ", $depends," =~ ,\ ${dependency}([[:space:]]|,) ]]; then
     depends+=", $dependency"
@@ -58,6 +63,12 @@ test -x "$work/verify/usr/bin/sliploom"
 cmp "$binary" "$work/verify/usr/bin/sliploom"
 cmp "$notice" "$work/verify/usr/share/doc/sliploom/Roboto-OFL.txt"
 desktop-file-validate "$work/verify/usr/share/applications/sliploom.desktop"
+test "$("$work/verify/usr/bin/sliploom" --version)" = "Sliploom $version"
+linked=$(ldd "$work/verify/usr/bin/sliploom")
+if [[ "$linked" == *'not found'* || ! "$linked" =~ libmtp\.so\.9[[:space:]]+\=\>[[:space:]]+/ ]]; then
+  printf 'Could not resolve the packaged binary’s shared libraries:\n%s\n' "$linked" >&2
+  exit 1
+fi
 
 cd "$(dirname "$package")"
 filename=$(basename "$package")
