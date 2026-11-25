@@ -30,7 +30,7 @@ The signed Android release has package ID `org.projectseam.android`, `versionNam
 
 ## Build checks and desktop candidates
 
-[Build checks](../.github/workflows/build.yml) also run on pushes to `main`, pull requests, or manual dispatch. Windows x64, macOS Apple Silicon, and Ubuntu 24.04 x64 check formatting, run Clippy, and build the Rust workspace and desktop crate with their lockfiles. The Android job uses JDK 21 and SDK 36 to build a debug APK and run lint, without an emulator or phone.
+[Build checks](../.github/workflows/build.yml) also run on pushes to `main`, pull requests, or manual dispatch. Windows x64, macOS Apple silicon, and Ubuntu 24.04 x64 check formatting, run Clippy, and build the Rust workspace and desktop crate with their lockfiles. Each desktop runner also sends a small batch to itself using the production Wi-Fi sender and receiver, then checks the saved bytes and confirmed receipts. The Android job uses JDK 21 and SDK 36 to build a debug APK and run lint, without an emulator or phone.
 
 Run [Package desktop candidates](../.github/workflows/package.yml) manually from **Actions** and download the three desktop packages and their sidecars from **Artifacts** on the completed run. They use the same filenames as public release assets, but this workflow does not publish a release. See [desktop packages](../packaging/README.md) for installation and removal.
 
